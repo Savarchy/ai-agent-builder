@@ -1,12 +1,13 @@
 (() => {
   const ds = document.currentScript.dataset;
-  const ENDPOINT = ds.endpoint;
-  const BOT_ID   = ds.botId || "default";
-  const TOKEN    = ds.siteToken;
+  const ENDPOINT = ds.endpoint;          // e.g. https://your-api.onrender.com
+  const BOT_ID   = ds.botId;             // your bot UUID (or persona key like "default")
+  const TOKEN    = ds.siteToken;         // JWT minted by /bots/{bot_id}/site-token
   const TITLE    = ds.title || "Chat";
   const PRIMARY  = ds.primary || "#3b82f6";
   const POS      = (ds.position || "bottom-right").toLowerCase();
 
+  // Host + Shadow DOM (isolated styles)
   const host = document.createElement("div");
   host.style.position = "fixed";
   host.style.zIndex = 2147483647;
@@ -79,13 +80,16 @@
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        // In production, your API checks this JWT (issued by /bots/{bot_id}/site-token)
         "Authorization": `Bearer ${TOKEN}`
       },
       body: JSON.stringify({ bot_id: BOT_ID, question: q })
     });
 
-    if (!resp.body) { para.textContent = "Error: no response"; return; }
-
+    if (!resp.body) {
+      para.textContent = "Error: no response body";
+      return;
+    }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
