@@ -9,4 +9,4 @@ httpx
 beautifulsoup4
 pdfplumber
 orjson
-requests
+
