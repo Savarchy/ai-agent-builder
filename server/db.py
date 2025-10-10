@@ -3,16 +3,9 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://postgresql://postgres:pF49650r5BqBw7Fo@db.vkwxxavfknbcpmsvrkcp.supabase.co:5432/postgres@127.0.0.1:5432/appdb?sslmode=disable",
-)
+DATABASE_URL = os.getenv("DATABASE_URL")  # do NOT hardcode
 
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    future=True,
-)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
