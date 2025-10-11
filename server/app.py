@@ -12,6 +12,7 @@ from fastapi.openapi.utils import get_openapi
 from sqlalchemy.orm import Session
 from sqlalchemy import text as sql_text
 from bs4 import BeautifulSoup
+from .llm import stream_chat                       # keep your current LLM streamer
 
 # local imports (your existing modules)
 from .db import Base, engine, get_db
@@ -21,7 +22,6 @@ from .chunker import split_text
 from .embedder import embed_texts, embed_query     # keep your current embedder
 from .retriever import search_mmr                  # uses pgvector + mmr
 from .prompting import build_prompt
-from .llm import stream_chat                       # keep your current LLM streamer
 
 
 # --- FastAPI app ---
