@@ -1,9 +1,7 @@
 # --- imports ---
 from dotenv import load_dotenv
-load_dotenv(..., override=True)
 from pathlib import Path
 # Force-load the project root .env and override any OS env vars
-load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env", override=True)
 from uuid import uuid4
 import os, io, time, jwt, requests
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Request
