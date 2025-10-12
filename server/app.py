@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, text
 from sqlalchemy import text as sql_text
 from bs4 import BeautifulSoup
 from .llm import stream_chat                       # keep your current LLM streamer
@@ -172,8 +173,10 @@ def _startup():
             print("Index ensure error:", e)
 
 # --- Health ---
-@app.get("/health")
-def health():
+@app.get("/health/db")
+def health_db():
+    with engine.connect() as c:
+        c.execute(text("select 1"))
     return {"ok": True}
 
 # --- Dev-only clear (guarded by APP_DEBUG) ---
