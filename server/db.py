@@ -16,7 +16,7 @@ def _get_database_url():
     dbname = os.getenv("DB_NAME", "postgres")
     if all([password, host]):
         return URL.create(
-            "postgresql+psycopg2",
+            "postgresql+psycopg",
             username=user,
             password=password,
             host=host,
