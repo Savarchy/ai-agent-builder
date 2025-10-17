@@ -171,7 +171,7 @@ def _startup():
         except Exception as e:
             print("Index ensure error:", e)
 from .db import engine
-    print("DB USER AT RUNTIME:", engine.url.username)  # TEMP: remove after verifying
+print("DB USER AT RUNTIME:", engine.url.username)  # TEMP: remove after verifying
 
 # --- Health ---
 @app.get("/health/db")
