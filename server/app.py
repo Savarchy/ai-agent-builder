@@ -22,6 +22,9 @@ from .chunker import split_text
 from .embedder import embed_texts, embed_query     # keep your current embedder
 from .retriever import search_mmr                  # uses pgvector + mmr
 from .prompting import build_prompt
+from .db import engine
+
+print("DB USER AT RUNTIME:", engine.url.username)  # TEMP: remove after verifying
 
 
 # --- FastAPI app ---
@@ -170,8 +173,7 @@ def _startup():
             """)
         except Exception as e:
             print("Index ensure error:", e)
-from .db import engine
-print("DB USER AT RUNTIME:", engine.url.username)  # TEMP: remove after verifying
+        
 
 # --- Health ---
 @app.get("/health/db")
