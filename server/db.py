@@ -12,7 +12,7 @@ def _get_database_url():
     user = os.getenv("DB_USER", "postgres")
     password = os.getenv("DB_PASSWORD")
     host = os.getenv("DB_HOST")
-    port = int(os.getenv("DB_PORT", "5432"))
+    port = int(os.getenv("DB_PORT", "6543"))
     dbname = os.getenv("DB_NAME", "postgres")
     if all([password, host]):
         return URL.create(
