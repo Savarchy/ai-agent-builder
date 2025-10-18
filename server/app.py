@@ -642,7 +642,9 @@ async def ask(payload: AskIn, db: Session = Depends(get_db), request: Request = 
     persona_prefix = persona["system_prefix"] if persona else ""
 
     # Prompt
-    system, user = build_prompt(payload.question, contexts)
+    ENQUIRY_URL = os.getenv("ENQUIRY_URL", "")  # e.g., https://tally.so/r/your-form-id
+    ...
+    system, user = build_prompt(payload.question, contexts, cta_url=ENQUIRY_URL or None)
     if persona_prefix:
         system = persona_prefix + "\n\n" + system
 
@@ -686,7 +688,9 @@ async def ask_stream(payload: AskIn, request: Request, db: Session = Depends(get
         persona = BOT_PROFILES.get(persona_key)
         persona_prefix = persona["system_prefix"] if persona else ""
 
-        system, user = build_prompt(payload.question, contexts)
+        ENQUIRY_URL = os.getenv("ENQUIRY_URL", "")  # e.g., https://tally.so/r/your-form-id
+        ...
+        system, user = build_prompt(payload.question, contexts, cta_url=ENQUIRY_URL or None)
         if persona_prefix:
             system = persona_prefix + "\n\n" + system
 
