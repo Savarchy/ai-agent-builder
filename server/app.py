@@ -24,8 +24,6 @@ from .retriever import search_mmr                  # uses pgvector + mmr
 from .prompting import build_prompt
 from .db import engine
 
-print("DB USER AT RUNTIME:", engine.url.username)  # TEMP: remove after verifying
-
 
 # --- FastAPI app ---
 app = FastAPI(
