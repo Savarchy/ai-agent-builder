@@ -424,15 +424,77 @@ def ingest_url(payload: IngestURLIn, db: Session = Depends(get_db)):
 
 
 # -----------------------------------------------------------------------------
-# INGEST: PDF (with size, pages, and sanity checks)
+# INGEST: PDF (robust: size cap, page cap, magic header, dual parser)
 # -----------------------------------------------------------------------------
+import io as _io
 from urllib.parse import urlparse
+from fastapi import UploadFile, File, Form
 
-MAX_PDF_MB = int(os.getenv("MAX_PDF_MB", "10"))
-MAX_PDF_BYTES = MAX_PDF_MB * 1024 * 1024
-MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "200"))
-# Optional: hard-cap total extracted characters (protects embedding costs)
-MAX_PDF_CHARS = int(os.getenv("MAX_PDF_CHARS", str(1_000_000)))  # ~1MB text
+MAX_PDF_MB     = int(os.getenv("MAX_PDF_MB", "10"))
+MAX_PDF_BYTES  = MAX_PDF_MB * 1024 * 1024
+MAX_PDF_PAGES  = int(os.getenv("MAX_PDF_PAGES", "200"))
+MAX_PDF_CHARS  = int(os.getenv("MAX_PDF_CHARS", str(1_000_000)))  # ~1MB text cap
+
+def _normalize_url(u: str | None) -> str | None:
+    if not u:
+        return None
+    u = u.strip()
+    if not u:
+        return None
+    if not u.lower().startswith(("http://", "https://")):
+        u = "https://" + u
+    if not urlparse(u).netloc:
+        raise HTTPException(status_code=400, detail="Canonical URL looks invalid.")
+    return u
+
+def _extract_text_pdfplumber(blob: bytes) -> list[str]:
+    import pdfplumber
+    text_all: list[str] = []
+    extracted = 0
+    with pdfplumber.open(_io.BytesIO(blob)) as pdf:
+        page_limit = min(len(pdf.pages), MAX_PDF_PAGES)
+        for i in range(page_limit):
+            t = (pdf.pages[i].extract_text() or "").strip()
+            if t:
+                need = MAX_PDF_CHARS - extracted
+                if need <= 0:
+                    break
+                if len(t) > need:
+                    t = t[:need] + "\n\n[Note: content truncated by MAX_PDF_CHARS.]"
+                text_all.append(t)
+                extracted += len(t)
+        if len(pdf.pages) > MAX_PDF_PAGES:
+            text_all.append(
+                f"\n\n[Note: PDF truncated at {MAX_PDF_PAGES} pages for processing.]"
+            )
+    return text_all
+
+def _extract_text_pypdf(blob: bytes) -> list[str]:
+    # Fallback extractor if pdfplumber isn’t available or fails
+    try:
+        import pypdf  # modern package name
+    except Exception:
+        import PyPDF2 as pypdf  # best-effort fallback if old name is present
+    text_all: list[str] = []
+    extracted = 0
+    reader = pypdf.PdfReader(_io.BytesIO(blob))
+    page_limit = min(len(reader.pages), MAX_PDF_PAGES)
+    for i in range(page_limit):
+        page = reader.pages[i]
+        t = (page.extract_text() or "").strip()
+        if t:
+            need = MAX_PDF_CHARS - extracted
+            if need <= 0:
+                break
+            if len(t) > need:
+                t = t[:need] + "\n\n[Note: content truncated by MAX_PDF_CHARS.]"
+            text_all.append(t)
+            extracted += len(t)
+    if len(reader.pages) > MAX_PDF_PAGES:
+        text_all.append(
+            f"\n\n[Note: PDF truncated at {MAX_PDF_PAGES} pages for processing.]"
+        )
+    return text_all
 
 @app.post("/ingest/pdf")
 async def ingest_pdf(
@@ -441,21 +503,7 @@ async def ingest_pdf(
     url: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
-    # --- light URL normalization (optional field) ---
-    norm_url = (url or "").strip() or None
-    if norm_url:
-        if not norm_url.lower().startswith(("http://", "https://")):
-            norm_url = "https://" + norm_url
-        # sanity: must have netloc if provided
-        if not urlparse(norm_url).netloc:
-            raise HTTPException(status_code=400, detail="Canonical URL looks invalid.")
-
-    # --- quick filename / content-type hints (non-fatal) ---
-    fname = (file.filename or "").lower()
-    ctype = (file.content_type or "").lower()
-
-    # --- read (size-capped) ---
-    # read +1 byte to detect overflow
+    # ---- Read safely with size cap
     blob = await file.read(MAX_PDF_BYTES + 1)
     if len(blob) > MAX_PDF_BYTES:
         raise HTTPException(
@@ -463,66 +511,44 @@ async def ingest_pdf(
             detail=f"PDF too large: limit is {MAX_PDF_MB} MB."
         )
 
-    # --- check it's a PDF by magic header (more reliable than MIME) ---
+    # ---- Quick magic header gate
+    # Some browsers send octet-stream; don’t rely only on MIME/extension.
     if not blob[:5].startswith(b"%PDF-"):
-        # allow extension or mime as a fallback hint
-        if not (fname.endswith(".pdf") or "pdf" in ctype):
-            raise HTTPException(status_code=400, detail="Please upload a valid PDF file.")
+        raise HTTPException(status_code=400, detail="Please upload a valid PDF file.")
 
-    # --- parse text with page cap ---
-    import pdfplumber, io as _io
-
+    # ---- Try to extract text (pdfplumber, then pypdf)
     text_all: list[str] = []
-    extracted_chars = 0
+    # 1) pdfplumber path
     try:
-        with pdfplumber.open(_io.BytesIO(blob)) as pdf:
-            page_limit = min(len(pdf.pages), MAX_PDF_PAGES)
-            for i in range(page_limit):
-                p = pdf.pages[i]
-                t = p.extract_text() or ""
-                t = t.strip()
-                if t:
-                    # honor global char cap if configured
-                    need = MAX_PDF_CHARS - extracted_chars
-                    if need <= 0:
-                        break
-                    if len(t) > need:
-                        t = t[:need] + "\n\n[Note: content truncated by MAX_PDF_CHARS.]"
-                    text_all.append(t)
-                    extracted_chars += len(t)
-
-            if len(pdf.pages) > MAX_PDF_PAGES:
-                text_all.append(
-                    f"\n\n[Note: PDF truncated at {MAX_PDF_PAGES} pages for processing.]"
-                )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"PDF parse failed: {e}")
+        text_all = _extract_text_pdfplumber(blob)
+    except Exception as e1:
+        print("[pdfplumber] parse failed, trying pypdf fallback:", e1)
+        # 2) pypdf fallback
+        try:
+            text_all = _extract_text_pypdf(blob)
+        except Exception as e2:
+            # If both fail, return a clean 400 (user-visible)
+            raise HTTPException(status_code=400, detail=f"PDF parse failed: {e2}")
 
     full_text = "\n\n".join(text_all).strip()
     if not full_text:
-        # Likely image-only PDF (no embedded text)
+        # Most likely image-only/scanned PDF without OCR
         raise HTTPException(
             status_code=400,
-            detail=(
-                "No extractable text found in PDF. "
-                "It may be image-only/scanned. Try an OCR'd PDF."
-            ),
+            detail="No extractable text found (PDF may be scanned images). Try an OCR’d PDF."
         )
 
     resolved_title = (title or file.filename or "Untitled PDF").strip()
+    norm_url = _normalize_url(url)
 
-    # reuse your text ingest (stores, chunks, embeds)
+    # Reuse the text ingest for chunking + embedding
     result = ingest_text(
         IngestTextIn(title=resolved_title, text=full_text, url=norm_url),
         db
     )
-
-    # make sure UI gets a title back
     if isinstance(result, dict):
         result["title"] = resolved_title
     return result
-
-
 
 # -----------------------------------------------------------------------------
 # ASK (non-stream)
