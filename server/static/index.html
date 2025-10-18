@@ -397,60 +397,89 @@
   }
 
   async function askNow() {
-    const qEl = document.getElementById('q');
-    const q = qEl.value.trim();
-    if (!q) return;
+  const qEl = document.getElementById('q');
+  const q = qEl.value.trim();
+  if (!q) return;
 
-    addBubble(q, 'user');
-    qEl.value = '';
+  // user bubble
+  addBubble(q, 'user');
+  qEl.value = '';
 
-    const bot = addBubble('', 'bot');
-    showTyping();
+  // bot bubble + typing
+  const bot = addBubble('', 'bot');
+  showTyping();
 
-    try {
-      const resp = await fetch(`${API_BASE}/ask/stream`, {
-        method: 'POST',
-        headers: authHeaders(true),
-        body: JSON.stringify({ question: q, k: 8, bot_id: currentBotId() })
-      });
+  try {
+    const resp = await fetch(`${API_BASE}/ask/stream`, {
+      method: 'POST',
+      headers: authHeaders(true),
+      body: JSON.stringify({ question: q, k: 8, bot_id: currentBotId() })
+    });
 
-      hideTyping();
+    hideTyping();
 
-      if (!resp.ok || !resp.body) {
-        const txt = await resp.text();
-        throw new Error(`Request failed: ${resp.status} ${txt}`);
-      }
+    if (!resp.ok || !resp.body) {
+      const txt = await resp.text();
+      throw new Error(`Request failed: ${resp.status} ${txt}`);
+    }
 
-      const reader = resp.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const parts = buf.split('\n\n');  // SSE-style chunks
-        buf = parts.pop();
-        for (const ch of parts) {
-          if (!ch.startsWith('data: ')) continue;
-          const chunk = ch.slice(6);
-          if (chunk === '[DONE]') { buf = ''; break; }
-          bot.innerHTML += chunk.replace(/\n/g, '<br/>');
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buf += dec.decode(value, { stream: true });
+
+      // SSE messages are separated by a blank line
+      const messages = buf.split('\n\n');
+      buf = messages.pop();
+
+      for (const msg of messages) {
+        // Parse SSE fields: event: X \n data: Y
+        let ev = 'message';
+        let data = '';
+
+        for (const line of msg.split('\n')) {
+          if (line.startsWith('event:')) ev = line.slice(6).trim();
+          else if (line.startsWith('data:')) data += line.slice(5);
+        }
+
+        if (ev === 'citations') {
+          // render ONLY clickable links beneath the answer
+          try {
+            const links = JSON.parse(data || '[]');
+            if (Array.isArray(links) && links.length) {
+              const cite = document.createElement('div');
+              cite.className = 'cite';
+              cite.innerHTML = links
+                .map(l => `<a href="${l.url}" target="_blank" rel="noopener">${(l.title || l.url)}</a>`)
+                .join(' &middot; ');
+              bot.appendChild(cite);
+            }
+          } catch { /* ignore malformed citations */ }
+          continue;
+        }
+
+        // normal token data (from the model) — keep it clean (no [1], “Sources”, etc.)
+        if (data) {
+          const clean = data
+            .replace(/\[\d+\]/g, '')                 // drop [1], [2], …
+            .replace(/\s*Sources?:.*$/i, '');        // drop trailing "Sources: …"
+          bot.innerHTML += clean.replace(/\n/g, '<br/>');
+
           const log = document.getElementById('log');
           log.scrollTop = log.scrollHeight;
         }
       }
-    } catch (e) {
-      hideTyping();
-      addBubble('⚠️ Error: ' + e.message, 'bot');
     }
+  } catch (e) {
+    hideTyping();
+    addBubble('⚠️ Error: ' + e.message, 'bot');
   }
-
-  // Wire up the Ask button + Enter key
-  document.getElementById('ask').addEventListener('click', askNow);
-  document.getElementById('q').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); askNow(); }
-  });
+}
 </script>
 </body>
 </html>
