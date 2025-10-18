@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Column, Integer, Text, String, ForeignKey, DateTime
+from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
@@ -16,11 +17,11 @@ EMBED_DIM = 1536
 class Document(Base):
     __tablename__ = "documents"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(String, primary_key=True)
     title = Column(String, nullable=False)
     url = Column(String, nullable=True)
-    text = Column(Text, nullable=False) 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    text = Column(Text, nullable=False)  # ✅ Make sure this line exists
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     chunks = relationship(
         "Chunk",
