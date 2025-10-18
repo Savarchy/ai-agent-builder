@@ -84,8 +84,17 @@ app = FastAPI(
     debug=True,
     swagger_ui_parameters={"persistAuthorization": True},
 )
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
+from pathlib import Path
 
+# Serve /ui/* from server/static, and redirect "/" -> /ui/
+app.mount("/ui", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="ui")
 
+@app.get("/")
+def _home():
+    return RedirectResponse("/ui/")
+    
 # --- OpenAPI with API key button (for /docs try-it-out) ---
 def custom_openapi():
     if app.openapi_schema:
