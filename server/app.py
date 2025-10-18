@@ -23,6 +23,10 @@ from .embedder import embed_texts, embed_query     # keep your current embedder
 from .retriever import search_mmr                  # uses pgvector + mmr
 from .prompting import build_prompt
 from .db import engine
+{
+  "bot_id": "Aussie mate",
+  "question": "What do koalas eat?"
+}
 
 def ensure_vector_schema(engine):
     """
