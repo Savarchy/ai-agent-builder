@@ -424,11 +424,15 @@ def ingest_url(payload: IngestURLIn, db: Session = Depends(get_db)):
 
 
 # -----------------------------------------------------------------------------
-# INGEST: PDF (with size & pages limits)
+# INGEST: PDF (with size, pages, and sanity checks)
 # -----------------------------------------------------------------------------
+from urllib.parse import urlparse
+
 MAX_PDF_MB = int(os.getenv("MAX_PDF_MB", "10"))
 MAX_PDF_BYTES = MAX_PDF_MB * 1024 * 1024
 MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "200"))
+# Optional: hard-cap total extracted characters (protects embedding costs)
+MAX_PDF_CHARS = int(os.getenv("MAX_PDF_CHARS", str(1_000_000)))  # ~1MB text
 
 @app.post("/ingest/pdf")
 async def ingest_pdf(
@@ -437,31 +441,56 @@ async def ingest_pdf(
     url: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
-    # Basic content-type/extension check
+    # --- light URL normalization (optional field) ---
+    norm_url = (url or "").strip() or None
+    if norm_url:
+        if not norm_url.lower().startswith(("http://", "https://")):
+            norm_url = "https://" + norm_url
+        # sanity: must have netloc if provided
+        if not urlparse(norm_url).netloc:
+            raise HTTPException(status_code=400, detail="Canonical URL looks invalid.")
+
+    # --- quick filename / content-type hints (non-fatal) ---
     fname = (file.filename or "").lower()
     ctype = (file.content_type or "").lower()
-    if not (fname.endswith(".pdf") or "pdf" in ctype):
-        raise HTTPException(status_code=400, detail="Please upload a PDF file.")
 
-    # Read with size cap (+1 byte to detect overflow)
-    content = await file.read(MAX_PDF_BYTES + 1)
-    if len(content) > MAX_PDF_BYTES:
+    # --- read (size-capped) ---
+    # read +1 byte to detect overflow
+    blob = await file.read(MAX_PDF_BYTES + 1)
+    if len(blob) > MAX_PDF_BYTES:
         raise HTTPException(
             status_code=413,
             detail=f"PDF too large: limit is {MAX_PDF_MB} MB."
         )
 
-    # Parse PDF text (cap pages)
-    import pdfplumber
-    text_all = []
+    # --- check it's a PDF by magic header (more reliable than MIME) ---
+    if not blob[:5].startswith(b"%PDF-"):
+        # allow extension or mime as a fallback hint
+        if not (fname.endswith(".pdf") or "pdf" in ctype):
+            raise HTTPException(status_code=400, detail="Please upload a valid PDF file.")
+
+    # --- parse text with page cap ---
+    import pdfplumber, io as _io
+
+    text_all: list[str] = []
+    extracted_chars = 0
     try:
-        with pdfplumber.open(io.BytesIO(content)) as pdf:
+        with pdfplumber.open(_io.BytesIO(blob)) as pdf:
             page_limit = min(len(pdf.pages), MAX_PDF_PAGES)
             for i in range(page_limit):
                 p = pdf.pages[i]
                 t = p.extract_text() or ""
-                if t.strip():
+                t = t.strip()
+                if t:
+                    # honor global char cap if configured
+                    need = MAX_PDF_CHARS - extracted_chars
+                    if need <= 0:
+                        break
+                    if len(t) > need:
+                        t = t[:need] + "\n\n[Note: content truncated by MAX_PDF_CHARS.]"
                     text_all.append(t)
+                    extracted_chars += len(t)
+
             if len(pdf.pages) > MAX_PDF_PAGES:
                 text_all.append(
                     f"\n\n[Note: PDF truncated at {MAX_PDF_PAGES} pages for processing.]"
@@ -471,9 +500,28 @@ async def ingest_pdf(
 
     full_text = "\n\n".join(text_all).strip()
     if not full_text:
-        raise HTTPException(status_code=400, detail="No text found in PDF.")
+        # Likely image-only PDF (no embedded text)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No extractable text found in PDF. "
+                "It may be image-only/scanned. Try an OCR'd PDF."
+            ),
+        )
 
-    return ingest_text(IngestTextIn(title=title or file.filename, text=full_text, url=url), db)
+    resolved_title = (title or file.filename or "Untitled PDF").strip()
+
+    # reuse your text ingest (stores, chunks, embeds)
+    result = ingest_text(
+        IngestTextIn(title=resolved_title, text=full_text, url=norm_url),
+        db
+    )
+
+    # make sure UI gets a title back
+    if isinstance(result, dict):
+        result["title"] = resolved_title
+    return result
+
 
 
 # -----------------------------------------------------------------------------
