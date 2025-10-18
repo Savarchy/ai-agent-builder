@@ -76,7 +76,6 @@ def ensure_vector_schema(engine):
         # Just log and continue; the app must still start.
         print(f"Index ensure error (ignored): {e}")
 
-
 # -----------------------------------------------------------------------------
 # FastAPI app
 # -----------------------------------------------------------------------------
