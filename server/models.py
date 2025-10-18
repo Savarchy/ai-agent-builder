@@ -1,49 +1,27 @@
 # server/models.py
-from .db import Base  # <-- make sure this import is present and at the top
-import uuid
-from datetime import datetime
-
-from sqlalchemy import Column, Integer, Text, String, ForeignKey, DateTime
-from sqlalchemy.sql import func
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
-from pgvector.sqlalchemy import Vector
-
-from .db import Base  # <-- make sure this import is present and at the top
-
-# If you use text-embedding-3-small, the vector size is 1536.
-EMBED_DIM = 1536
+from sqlalchemy import Column, Integer, Text, DateTime, ForeignKey, func, text as sa_text
+from sqlalchemy.dialects.postgresql import UUID, ARRAY
+from sqlalchemy.types import Float
+from .db import Base
 
 class Document(Base):
     __tablename__ = "documents"
 
-    id = Column(String, primary_key=True)
-    title = Column(String, nullable=False)
-    url = Column(String, nullable=True)
-    text = Column(Text, nullable=False)  # ✅ Make sure this line exists
+    # DB: id uuid primary key default gen_random_uuid()
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()"))
+    title = Column(Text)
+    url = Column(Text)
+    # DB column is named 'text' (not 'content')
+    text = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    chunks = relationship(
-        "Chunk",
-        cascade="all, delete-orphan",
-        back_populates="document",
-    )
 
 class Chunk(Base):
     __tablename__ = "chunks"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    document_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("documents.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    ord = Column(Integer, nullable=False)
-    text = Column(Text, nullable=False)
-
-    # vector column for embeddings
-    embedding = Column(Vector(EMBED_DIM))
-
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    document = relationship("Document", back_populates="chunks")
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=sa_text("gen_random_uuid()"))
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"))
+    ord = Column(Integer)
+    text = Column(Text)
+    # If you're storing arrays of floats; keep this if you aren't binding pgvector from SQLAlchemy.
+    embedding = Column(ARRAY(Float))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
