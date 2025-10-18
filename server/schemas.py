@@ -1,10 +1,10 @@
 from pydantic import BaseModel, HttpUrl
 from typing import Optional, List
 
-class IngestTextIn (BaseModel):
-    title: str
+class IngestTextIn(BaseModel):
+    title: Optional[str] = None
     text: str
-    url: str | None = None
+    url: Optional[str] = None
 
 class Doc(BaseModel):
     title: str
@@ -12,7 +12,8 @@ class Doc(BaseModel):
     url: str | None = None
 
 class IngestURLIn(BaseModel):
-    url: HttpUrl
+    # accept raw string; we’ll normalize in the route
+    url: str
     title: Optional[str] = None
 
 class AskIn(BaseModel):
