@@ -223,18 +223,13 @@ def ingest_text(payload: IngestTextIn, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="No text provided.")
         url_str = str(payload.url) if getattr(payload, "url", None) else None
 
-        # 1) Document  ⬅️ change `content=` to `text=`
-        doc = Document(
-            id=str(uuid4()),
-            title=payload.title,
-            url=url_str,
-            text=text_in,            # <<< THIS is the important change
-        )
+        # 1) Document (let DB generate UUID; note 'text' not 'content')
+        doc = Document(title=payload.title, url=url_str, text=text_in)
         db.add(doc)
         db.commit()
-        db.refresh(doc)
+        db.refresh(doc)  # now doc.id is a real UUID from DB
 
-        # 2) Chunk
+        # 2) Chunking
         parts = split_text(text_in)
         if parts is None:
             parts = [text_in]
@@ -243,7 +238,7 @@ def ingest_text(payload: IngestTextIn, db: Session = Depends(get_db)):
         if not parts:
             parts = [text_in]
 
-        # 3) Embed
+        # 3) Embeddings
         embs = embed_texts(parts)
         if embs is None or len(embs) != len(parts):
             embs = []
@@ -253,10 +248,9 @@ def ingest_text(payload: IngestTextIn, db: Session = Depends(get_db)):
                     raise RuntimeError("Embedding failed for a chunk")
                 embs.append(one[0])
 
-        # 4) Write chunks
+        # 4) Write chunks (also let DB generate UUIDs)
         for i, (p, emb) in enumerate(zip(parts, embs)):
             db.add(Chunk(
-                id=str(uuid4()),
                 document_id=doc.id,
                 ord=i,
                 text=p,
@@ -270,6 +264,7 @@ def ingest_text(payload: IngestTextIn, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"/ingest/text failed: {e}")
+
 
 # --- INGEST: URL ---
 # -----------------------------------------------------------------------------
