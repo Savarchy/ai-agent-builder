@@ -3,6 +3,19 @@ from __future__ import annotations
 
 import os
 import httpx
+import logging
+logger = logging.getLogger(__name__)
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    if not texts:
+        return []
+    azure_url = _azure_embed_url()
+    if azure_url:
+        logger.info("Embedding provider: Azure OpenAI")
+        ...
+    else:
+        logger.info("Embedding provider: Standard OpenAI")
+        ...
 
 # -------- Normal OpenAI (default) --------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
