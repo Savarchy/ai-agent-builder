@@ -204,8 +204,17 @@ if os.getenv("APP_DEBUG", "1") == "1":
 # -----------------------------------------------------------------------------
 # STARTUP: ensure pgvector extension, then tables & index
 # -----------------------------------------------------------------------------
+# server/app.py
+
+from .db import engine
+# from .schema_bootstrap import ensure_vector_schema  # if you moved it
+
 @app.on_event("startup")
-def _startup():
+def _startup() -> None:
+    # Make sure you pass the ENGINE, not a Connection/Session/Transaction
+    ensure_vector_schema(engine)
+    # ...rest of your startup...
+
     # 1) ensure extension exists
     from .db import engine  # keep your import style
     with engine.connect() as conn:
@@ -214,17 +223,6 @@ def _startup():
 
     # 2) create tables now that 'vector' type exists
     Base.metadata.create_all(bind=engine)
-
-    # 3) ensure ANN index (ivfflat) on the vector column
-    with engine.begin() as conn:
-        try:
-            conn.exec_driver_sql("""
-                CREATE INDEX IF NOT EXISTS ix_chunks_embedding_cosine
-                ON chunks USING ivfflat (embedding vector_cosine_ops);
-            """)
-        except Exception as e:
-            print("Index ensure error:", e)
-        
 
 # --- Health ---
 @app.get("/health/db")
