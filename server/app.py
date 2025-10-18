@@ -165,9 +165,36 @@ def verify_site_bearer_header(auth_header: str | None):
 # --- Gate: allow either valid Bearer (site) OR x-api-key ---
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
-    # Always allow CORS preflight & health/docs/openapi
+    # --- Always allow CORS preflight ---
     if request.method == "OPTIONS":
+        # Respond manually, browsers need 200 for preflight
+        return JSONResponse(
+            status_code=200,
+            content={"ok": True},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+                "Access-Control-Allow-Headers": "Authorization, X-API-Key, Content-Type",
+                "Access-Control-Max-Age": "86400",
+            },
+        )
+
+    # --- Always allow health/docs/openapi ---
+    if request.url.path.startswith(("/docs", "/openapi.json", "/health")):
         return await call_next(request)
+
+    # --- Auth logic (Bearer or x-api-key) ---
+    auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        _payload = verify_site_bearer_header(auth_header)
+        return await call_next(request)
+
+    key = request.headers.get("x-api-key")
+    if API_KEY and key == API_KEY:
+        return await call_next(request)
+
+    return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+
     if request.url.path.startswith(("/docs", "/openapi.json", "/health")):
         return await call_next(request)
 
