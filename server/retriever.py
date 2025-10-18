@@ -4,6 +4,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text as sql_text
 import numpy as np
 import json
+import os
+EMBED_DIM = int(os.getenv("EMBED_DIM", "1536"))
+
 
 # -------------------------------------------------------------
 # Ensure pgvector indexes (safe to call on startup)
