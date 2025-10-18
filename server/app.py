@@ -1,39 +1,34 @@
-# --- imports ---
-from dotenv import load_dotenv
-from pathlib import Path
-# Force-load the project root .env and override any OS env vars
-from uuid import uuid4
+# server/app.py
+
+# --- stdlib / third-party imports ---
 import os, io, time, jwt, requests
+from uuid import uuid4
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine, text
-from sqlalchemy import text as sql_text
-from bs4 import BeautifulSoup
-from .llm import stream_chat                       # keep your current LLM streamer
+from sqlalchemy import text as sql_text, text
 
-# local imports (your existing modules)
+# --- local imports ---
 from .db import Base, engine, get_db
 from .models import Document, Chunk
 from .schemas import IngestTextIn, IngestURLIn, AskIn, AskOut, Citation
 from .chunker import split_text
-from .embedder import embed_texts, embed_query     # keep your current embedder
-from .retriever import search_mmr                  # uses pgvector + mmr
+from .embedder import embed_texts, embed_query
+from .retriever import search_mmr
 from .prompting import build_prompt
-from .db import engine
-# server/app.py
-from fastapi import FastAPI
-import os
+from .llm import stream_chat
 
-from .db import engine, Base  # make sure Base is your declarative_base()
-# If you already defined ensure_vector_schema in another file, remove the function
-# below and instead: from .schema_bootstrap import ensure_vector_schema
-
-app = FastAPI(title="AI Agent Builder — Quickstart")
+# Load .env early
+load_dotenv()
 
 
+# -----------------------------------------------------------------------------
+# PgVector bootstrap that works on small DB plans
+# -----------------------------------------------------------------------------
 def ensure_vector_schema(engine):
     """
     Makes schema safe for pgvector on small plans.
@@ -59,7 +54,7 @@ def ensure_vector_schema(engine):
             """)
             print("chunks.embedding is vector(1536)")
     except Exception as e:
-        # It's OK if table doesn't exist yet or type already correct
+        # It's OK if table/index doesn't exist yet or already correct.
         print(f"Column alter error (ignored): {e}")
 
     # 3) Optional: ANN index. Safe default is to skip on tiny plans.
@@ -82,22 +77,15 @@ def ensure_vector_schema(engine):
         print(f"Index ensure error (ignored): {e}")
 
 
-@app.on_event("startup")
-def _startup() -> None:
-    # Bootstrap pgvector + column + (optional) index
-    ensure_vector_schema(engine)
-
-    # Create tables after the vector type is available
-    Base.metadata.create_all(bind=engine)
-
-    print("Startup bootstrap complete")
-
-# --- FastAPI app ---
+# -----------------------------------------------------------------------------
+# FastAPI app
+# -----------------------------------------------------------------------------
 app = FastAPI(
     title="AI Agent Builder — Quickstart",
     debug=True,
     swagger_ui_parameters={"persistAuthorization": True},
 )
+
 
 # --- OpenAPI with API key button (for /docs try-it-out) ---
 def custom_openapi():
@@ -126,6 +114,7 @@ def custom_openapi():
 
 app.openapi = custom_openapi
 
+
 # --- CORS ---
 ALLOWED_ORIGINS = [
     "http://127.0.0.1:5500",
@@ -146,6 +135,7 @@ app.add_middleware(
     expose_headers=["Content-Type", "Cache-Control", "X-Requested-With"],
 )
 
+
 # --- Auth config ---
 API_KEY = os.getenv("API_KEY", "dev-secret-123")
 SITE_JWT_SECRET = os.getenv("SITE_JWT_SECRET", "change_me")
@@ -158,7 +148,7 @@ def issue_site_token(bot_id: str, domain: str | None = None, ttl_minutes: int = 
     return jwt.encode(payload, SITE_JWT_SECRET, algorithm="HS256")
 
 def verify_site_bearer_header(auth_header: str | None):
-    """Return decoded payload if valid 'Bearer <jwt>' for site tokens, else None/raise."""
+    """Return decoded payload if valid 'Bearer <jwt>' for site tokens, else raise 401."""
     if not auth_header or not auth_header.startswith("Bearer "):
         return None
     token = auth_header.split(" ", 1)[1].strip()
@@ -172,6 +162,7 @@ def verify_site_bearer_header(auth_header: str | None):
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+
 # --- Gate: allow either valid Bearer (site) OR x-api-key ---
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
@@ -184,8 +175,7 @@ async def auth_gate(request: Request, call_next):
     # 1) Try Bearer site token
     auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
-        _payload = verify_site_bearer_header(auth_header)  # raises on invalid
-        # valid → let it through
+        _ = verify_site_bearer_header(auth_header)  # raises on invalid
         return await call_next(request)
 
     # 2) Fallback to x-api-key (admin/dev)
@@ -196,7 +186,8 @@ async def auth_gate(request: Request, call_next):
     # Neither provided/valid
     return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
 
-# --- Simple logging (one clean middleware) ---
+
+# --- Simple logging ---
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     print(f">>> {request.method} {request.url.path}")
@@ -208,6 +199,7 @@ async def log_requests(request: Request, call_next):
         print(f"!!! {request.method} {request.url.path} -> {e}")
         raise
 
+
 # --- Optional debug exception JSON ---
 if os.getenv("APP_DEBUG", "1") == "1":
     @app.exception_handler(Exception)
@@ -217,22 +209,10 @@ if os.getenv("APP_DEBUG", "1") == "1":
         print("TRACEBACK:\n", tb)
         return JSONResponse(status_code=500, content={"detail": str(exc), "trace": tb})
 
+
 # -----------------------------------------------------------------------------
-# STARTUP: ensure pgvector extension, then tables & index
+# STARTUP: ensure pgvector extension, then tables & (optional) index
 # -----------------------------------------------------------------------------
-# --------------------------------------------------------------------
-# server/app.py  — startup bootstrap (copy–paste)
-# --------------------------------------------------------------------
-from fastapi import FastAPI
-
-# If ensure_vector_schema lives in this same file, remove this import
-# and call the function directly. Otherwise, import it:
-from .schema_bootstrap import ensure_vector_schema  # or: from .app import ensure_vector_schema
-
-from .db import engine, Base
-
-app = FastAPI(title="AI Agent Builder — Quickstart")
-
 @app.on_event("startup")
 def _startup() -> None:
     # IMPORTANT: pass the ENGINE (not a Connection/Session/Transaction)
@@ -251,6 +231,7 @@ def health_db():
         c.execute(text("select 1"))
     return {"ok": True}
 
+
 # --- Dev-only clear (guarded by APP_DEBUG) ---
 if os.getenv("APP_DEBUG", "1") == "1":
     @app.post("/_dev/clear")
@@ -259,6 +240,7 @@ if os.getenv("APP_DEBUG", "1") == "1":
         db.execute(sql_text("DELETE FROM documents;"))
         db.commit()
         return {"ok": True}
+
 
 # --- Bot profiles & /bots ---
 BOT_PROFILES = {
@@ -272,18 +254,20 @@ BOT_PROFILES = {
 def list_bots():
     return [{"id": k, "name": v["name"]} for k, v in BOT_PROFILES.items()]
 
+
 # --- Mint site token (admin/dev via x-api-key) ---
 @app.post("/bots/{bot_id}/site-token")
 def mint_site_token(bot_id: str, body: dict, request: Request):
-    # The auth_gate already validated, but explicitly restrict to x-api-key here if you want:
-    # (If you want Bearer callers to be able to mint, remove this check.)
     if request.headers.get("x-api-key") != API_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
     domain = (body or {}).get("domain")
     ttl = int((body or {}).get("ttl_minutes", 60))
     return {"token": issue_site_token(bot_id, domain, ttl)}
 
-# --- INGEST: TEXT ---
+
+# -----------------------------------------------------------------------------
+# INGEST: TEXT
+# -----------------------------------------------------------------------------
 @app.post("/ingest/text")
 def ingest_text(payload: IngestTextIn, db: Session = Depends(get_db)):
     try:
@@ -292,11 +276,11 @@ def ingest_text(payload: IngestTextIn, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="No text provided.")
         url_str = str(payload.url) if getattr(payload, "url", None) else None
 
-        # 1) Document (let DB generate UUID; note 'text' not 'content')
-        doc = Document(title=payload.title, url=url_str, text=text_in)
+        # 1) Document (let DB generate UUID; NOTE: uses Document.text)
+        doc = Document(title=payload.title, url=url_str, text=text_in)  # <-- uses Document.text
         db.add(doc)
         db.commit()
-        db.refresh(doc)  # now doc.id is a real UUID from DB
+        db.refresh(doc)  # doc.id is now set
 
         # 2) Chunking
         parts = split_text(text_in)
@@ -317,7 +301,7 @@ def ingest_text(payload: IngestTextIn, db: Session = Depends(get_db)):
                     raise RuntimeError("Embedding failed for a chunk")
                 embs.append(one[0])
 
-        # 4) Write chunks (also let DB generate UUIDs)
+        # 4) Write chunks (let DB generate UUIDs)
         for i, (p, emb) in enumerate(zip(parts, embs)):
             db.add(Chunk(
                 document_id=doc.id,
@@ -335,7 +319,6 @@ def ingest_text(payload: IngestTextIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"/ingest/text failed: {e}")
 
 
-# --- INGEST: URL ---
 # -----------------------------------------------------------------------------
 # INGEST: URL (with fetch & text size guard)
 # -----------------------------------------------------------------------------
@@ -362,24 +345,22 @@ def ingest_url(payload: IngestURLIn, db: Session = Depends(get_db)):
     soup = BeautifulSoup(r.text, "html.parser")
     for s in soup(["script", "style", "noscript", "svg"]):
         s.decompose()
-    text = soup.get_text(separator="\n", strip=True)
-    if not text:
+    text_body = soup.get_text(separator="\n", strip=True)
+    if not text_body:
         raise HTTPException(status_code=400, detail="No extractable text.")
 
     # Guard: cap the size of text we process
-    if len(text) > MAX_FETCH_CHARS:
-        text = text[:MAX_FETCH_CHARS]
-        text += f"\n\n[Note: content truncated at ~{MAX_FETCH_MB} MB for processing.]"
+    if len(text_body) > MAX_FETCH_CHARS:
+        text_body = text_body[:MAX_FETCH_CHARS]
+        text_body += f"\n\n[Note: content truncated at ~{MAX_FETCH_MB} MB for processing.]"
 
     title = payload.title or (soup.title.get_text(strip=True) if soup.title else str(payload.url))
-    return ingest_text(IngestTextIn(title=title, text=text, url=str(payload.url)), db)
+    return ingest_text(IngestTextIn(title=title, text=text_body, url=str(payload.url)), db)
 
-# --- INGEST: PDF ---
+
 # -----------------------------------------------------------------------------
 # INGEST: PDF (with size & pages limits)
 # -----------------------------------------------------------------------------
-from fastapi import UploadFile, File, Form
-
 MAX_PDF_MB = int(os.getenv("MAX_PDF_MB", "10"))
 MAX_PDF_BYTES = MAX_PDF_MB * 1024 * 1024
 MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "200"))
@@ -429,7 +410,10 @@ async def ingest_pdf(
 
     return ingest_text(IngestTextIn(title=title or file.filename, text=full_text, url=url), db)
 
-# --- ASK (non-stream) ---
+
+# -----------------------------------------------------------------------------
+# ASK (non-stream)
+# -----------------------------------------------------------------------------
 @app.post("/ask", response_model=AskOut)
 async def ask(payload: AskIn, db: Session = Depends(get_db), request: Request = None):
     # Embed the question
@@ -446,12 +430,12 @@ async def ask(payload: AskIn, db: Session = Depends(get_db), request: Request = 
 
     # Build contexts & citations
     contexts, citations = [], []
-    for (text, title, url, _emb) in rows:
-        contexts.append((text[:1000], url, 0.0))
+    for (text_val, title, url, _emb) in rows:
+        contexts.append((text_val[:1000], url, 0.0))
         citations.append(Citation(
             title=title or "",
             url=url or "",
-            snippet=text[:240].replace("\n", " "),
+            snippet=text_val[:240].replace("\n", " "),
             score=0.0,
         ))
 
@@ -474,14 +458,16 @@ async def ask(payload: AskIn, db: Session = Depends(get_db), request: Request = 
     return AskOut(answer=answer, citations=citations[:5])
 
 
-# --- ASK (streaming SSE) ---
+# -----------------------------------------------------------------------------
+# ASK (streaming SSE)
+# -----------------------------------------------------------------------------
 @app.post("/ask/stream")
 async def ask_stream(payload: AskIn, request: Request, db: Session = Depends(get_db)):
     try:
         # If a Bearer token is present, validate it (dev with x-api-key still passes middleware)
-        _ = request.headers.get("authorization") or request.headers.get("Authorization")
-        if _:
-            _ = verify_site_bearer_header(_)
+        _hdr = request.headers.get("authorization") or request.headers.get("Authorization")
+        if _hdr:
+            _ = verify_site_bearer_header(_hdr)
 
         # Embed the question
         q_emb = embed_query(payload.question)
@@ -498,7 +484,7 @@ async def ask_stream(payload: AskIn, request: Request, db: Session = Depends(get
             return StreamingResponse(err(), media_type="text/event-stream")
 
         # Build contexts & persona
-        contexts = [(text[:1000], url, 0.0) for (text, title, url, _emb) in rows]
+        contexts = [(text_val[:1000], url, 0.0) for (text_val, title, url, _emb) in rows]
         persona_key = getattr(payload, "bot_id", None) or "default"
         persona = BOT_PROFILES.get(persona_key)
         persona_prefix = persona["system_prefix"] if persona else ""
@@ -509,7 +495,6 @@ async def ask_stream(payload: AskIn, request: Request, db: Session = Depends(get
 
         async def gen():
             yield "event: start\ndata: {}\n\n"
-            # IMPORTANT: async generator -> use async for
             async for tok in stream_chat(system, user):
                 yield f"data: {tok}\n\n"
             yield "event: end\ndata: {}\n\n"
