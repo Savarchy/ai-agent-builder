@@ -24,6 +24,31 @@ from .retriever import search_mmr                  # uses pgvector + mmr
 from .prompting import build_prompt
 from .db import engine
 
+def ensure_vector_schema(db):
+    # 1) extension
+    db.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+
+    # 2) column -> 1536 dims (idempotent)
+    db.execute(text("""
+        ALTER TABLE chunks
+        ALTER COLUMN embedding TYPE vector(1536);
+    """))
+
+    # 3) ivfflat index (optional & small)
+    if os.getenv("SKIP_IVFFLAT", "0") == "1":
+        print("SKIP_IVFFLAT=1 -> not creating IVFFLAT index")
+        return
+
+    lists = int(os.getenv("IVFFLAT_LISTS", "8"))  # keep small on free tiers
+    try:
+        db.execute(text(f"""
+            CREATE INDEX IF NOT EXISTS ix_chunks_embedding_cosine
+            ON chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = {lists});
+        """))
+        print(f"IVFFLAT index ensured with lists={lists}")
+    except Exception as e:
+        # Don't crash the service; ANN index is an optimization.
+        print(f"Index ensure error (ignored): {e}")
 
 # --- FastAPI app ---
 app = FastAPI(
@@ -156,7 +181,9 @@ if os.getenv("APP_DEBUG", "1") == "1":
 @app.on_event("startup")
 def _startup():
     # 1) ensure extension exists
+    from .db import engine  # keep your import style
     with engine.connect() as conn:
+        ensure_vector_schema(conn)
         conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector;")
 
     # 2) create tables now that 'vector' type exists
