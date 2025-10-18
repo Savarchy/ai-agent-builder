@@ -223,9 +223,16 @@ def ingest_text(payload: IngestTextIn, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="No text provided.")
         url_str = str(payload.url) if getattr(payload, "url", None) else None
 
-        # 1) Document
-        doc = Document(id=str(uuid4()), title=payload.title, url=url_str, content=text_in)
-        db.add(doc); db.commit(); db.refresh(doc)
+        # 1) Document  ⬅️ change `content=` to `text=`
+        doc = Document(
+            id=str(uuid4()),
+            title=payload.title,
+            url=url_str,
+            text=text_in,            # <<< THIS is the important change
+        )
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
 
         # 2) Chunk
         parts = split_text(text_in)
