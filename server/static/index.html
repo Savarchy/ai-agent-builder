@@ -166,11 +166,11 @@
 <!-- ==== SINGLE, CLEAN SCRIPT BLOCK ==== -->
 <script>
   /************ EDIT THESE FOR YOUR SETUP ************/
-  // Use the same origin the page was served from (works on Render)
+  // Use the same origin your /ui page was served from (works on Render)
   const API_BASE   = window.location.origin;
 
-  // For quick testing you can use your x-api-key (same one you used in /docs).
-  // For production, leave API_KEY empty and set SITE_TOKEN to a minted site JWT.
+  // For quick testing you can use your x-api-key (same one that works in /docs).
+  // For production, set API_KEY = "" and paste a minted site JWT into SITE_TOKEN.
   const API_KEY    = "YOUR_X_API_KEY_HERE";   // or "" if you’ll use SITE_TOKEN
   const SITE_TOKEN = "";                      // put a site JWT here for prod
   const DEFAULT_BOT_ID = "default";
@@ -197,14 +197,14 @@
     return fetch(`${API_BASE}${path}`, { method: "POST", headers: authHeaders(true), body: JSON.stringify(body) });
   }
   async function apiPostForm(path, formData) {
-    const h = authHeaders(false);       // deliberately no content-type here
+    const h = authHeaders(false); // let browser set boundary automatically
     return fetch(`${API_BASE}${path}`, { method: "POST", headers: h, body: formData });
   }
 
   /************ Health indicator ************/
   async function health() {
     try {
-      // your API exposes /health/db (not /health)
+      // Your API exposes /health/db
       const r = await apiGet("/health/db");
       const j = await r.json();
       $("#health").textContent = j.ok ? "API OK ✅" : "API error ❌";
@@ -213,7 +213,6 @@
     }
   }
   health();
-
 
   /************ Tabs ************/
   function tab(n){
@@ -298,11 +297,11 @@
   document.addEventListener("DOMContentLoaded", loadBots);
 
   /************ Ingest: Text ************/
-  $('#ingText').onclick = async () => {
-    const title = $('#title').value.trim();
-    const canon = $('#canon').value.trim();
-    const text  = $('#txt').value.trim();
-    const status = $('#s1');
+  document.getElementById('ingText').onclick = async () => {
+    const title = document.getElementById('title').value.trim();
+    const canon = document.getElementById('canon').value.trim();
+    const text  = document.getElementById('txt').value.trim();
+    const status = document.getElementById('s1');
     resetProgress('pr1'); status.textContent='';
 
     if (!title || !text) { status.textContent='Please provide a Title and some text.'; return; }
@@ -323,9 +322,9 @@
   };
 
   /************ Ingest: URL ************/
-  $('#ingURL').onclick = async () => {
-    const url = $('#url').value.trim();
-    const status = $('#s2');
+  document.getElementById('ingURL').onclick = async () => {
+    const url = document.getElementById('url').value.trim();
+    const status = document.getElementById('s2');
     resetProgress('pr2'); status.textContent='';
     if (!url) { status.textContent='Please enter a URL.'; return; }
 
@@ -345,11 +344,11 @@
   };
 
   /************ Ingest: PDF ************/
-  $('#ingPDF').onclick = async () => {
-    const file = $('#pdf').files[0];
-    const title = $('#pdfTitle').value.trim();
-    const url   = $('#pdfUrl').value.trim();
-    const status = $('#s3');
+  document.getElementById('ingPDF').onclick = async () => {
+    const file = document.getElementById('pdf').files[0];
+    const title = document.getElementById('pdfTitle').value.trim();
+    const url   = document.getElementById('pdfUrl').value.trim();
+    const status = document.getElementById('s3');
     resetProgress('pr3'); status.textContent='';
     if (!file) { status.textContent = 'Please choose a PDF file.'; return; }
 
@@ -378,18 +377,18 @@
     const b = document.createElement('div');
     b.className = 'bubble ' + (who==='user'?'user':'bot');
     b.innerHTML = (text || '').replace(/\n/g,'<br/>');
-    $('#log').appendChild(b);
-    $('#log').scrollTop = $('#log').scrollHeight;
+    document.getElementById('log').appendChild(b);
+    document.getElementById('log').scrollTop = document.getElementById('log').scrollHeight;
     return b;
   }
   function showTyping(){
     const t = document.createElement('div');
     t.className = 'typing'; t.id = 'typing';
     t.innerHTML = '<div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>';
-    $('#log').appendChild(t);
-    $('#log').scrollTop = $('#log').scrollHeight;
+    document.getElementById('log').appendChild(t);
+    document.getElementById('log').scrollTop = document.getElementById('log').scrollHeight;
   }
-  function hideTyping(){ const t = $('#typing'); if (t) t.remove(); }
+  function hideTyping(){ const t = document.getElementById('typing'); if (t) t.remove(); }
 
   /************ Ask (STREAM via SSE) ************/
   function currentBotId() {
