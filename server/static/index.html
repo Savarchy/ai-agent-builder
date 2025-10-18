@@ -165,18 +165,15 @@
 
 <!-- ==== SINGLE, CLEAN SCRIPT BLOCK ==== -->
 <script>
-  // ✅ point to your live API
-  const API_BASE   = "https://ai-agent-builder-api.onrender.com";
+  /************ EDIT THESE FOR YOUR SETUP ************/
+  // Use the same origin the page was served from (works on Render)
+  const API_BASE   = window.location.origin;
 
-  // You can keep x-api-key while testing:
-  const API_KEY    = "564654sdfjshdfkjhg6579687sf465";
-
-  // (Optional, for production embeds) Mint a site token from /docs -> POST /bots/{bot_id}/site-token
-  // then paste it here and remove API_KEY usage in authHeaders.
-  const SITE_TOKEN = ""; // e.g. "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  // For quick testing you can use your x-api-key (same one you used in /docs).
+  // For production, leave API_KEY empty and set SITE_TOKEN to a minted site JWT.
+  const API_KEY    = "YOUR_X_API_KEY_HERE";   // or "" if you’ll use SITE_TOKEN
+  const SITE_TOKEN = "";                      // put a site JWT here for prod
   const DEFAULT_BOT_ID = "default";
-</script>
-
 
   const $ = s => document.querySelector(s);
 
@@ -186,40 +183,29 @@
     if (json) h["Content-Type"] = "application/json";
     if (SITE_TOKEN && SITE_TOKEN.length > 10) {
       h["Authorization"] = "Bearer " + SITE_TOKEN; // production embed
-    } else {
-      h["x-api-key"] = API_KEY;                    // local dev
+    } else if (API_KEY) {
+      h["x-api-key"] = API_KEY;                    // dev / testing
     }
     return h;
   }
 
   /************ API helpers ************/
   async function apiGet(path) {
-    return fetch(`${API_BASE}${path}`, {
-      method: "GET",
-      headers: authHeaders(false)
-    });
+    return fetch(`${API_BASE}${path}`, { method: "GET", headers: authHeaders(false) });
   }
   async function apiPost(path, body) {
-    return fetch(`${API_BASE}${path}`, {
-      method: "POST",
-      headers: authHeaders(true),
-      body: JSON.stringify(body)
-    });
+    return fetch(`${API_BASE}${path}`, { method: "POST", headers: authHeaders(true), body: JSON.stringify(body) });
   }
   async function apiPostForm(path, formData) {
-    const h = authHeaders(false);
-    // let browser set boundary automatically
-    return fetch(`${API_BASE}${path}`, {
-      method: "POST",
-      headers: h,
-      body: formData
-    });
+    const h = authHeaders(false);       // deliberately no content-type here
+    return fetch(`${API_BASE}${path}`, { method: "POST", headers: h, body: formData });
   }
 
   /************ Health indicator ************/
   async function health() {
     try {
-      const r = await apiGet("/health");
+      // your API exposes /health/db (not /health)
+      const r = await apiGet("/health/db");
       const j = await r.json();
       $("#health").textContent = j.ok ? "API OK ✅" : "API error ❌";
     } catch {
@@ -227,6 +213,7 @@
     }
   }
   health();
+
 
   /************ Tabs ************/
   function tab(n){
