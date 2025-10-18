@@ -127,7 +127,8 @@ def search_mmr(db: Session,
         FROM chunks c
         JOIN documents d ON d.id = c.document_id
         WHERE c.embedding IS NOT NULL
-        ORDER BY c.embedding <=> (:qvec)::vector(768)
+        ORDER BY c.embedding <=> (%(qvec)s)::vector({EMBED_DIM})
+
         LIMIT :pool;
     """)
     rows = db.execute(sql, {"qvec": qvec, "pool": int(pool)}).fetchall()
