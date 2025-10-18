@@ -23,10 +23,16 @@ from .embedder import embed_texts, embed_query     # keep your current embedder
 from .retriever import search_mmr                  # uses pgvector + mmr
 from .prompting import build_prompt
 from .db import engine
-{
-  "bot_id": "Aussie mate",
-  "question": "What do koalas eat?"
-}
+# server/app.py
+from fastapi import FastAPI
+import os
+
+from .db import engine, Base  # make sure Base is your declarative_base()
+# If you already defined ensure_vector_schema in another file, remove the function
+# below and instead: from .schema_bootstrap import ensure_vector_schema
+
+app = FastAPI(title="AI Agent Builder — Quickstart")
+
 
 def ensure_vector_schema(engine):
     """
@@ -46,13 +52,14 @@ def ensure_vector_schema(engine):
 
     # 2) Ensure column is correct type/dimensions.
     try:
-        with engine.begin() as conn:  # transactional (will auto-rollback on error)
+        with engine.begin() as conn:
             conn.exec_driver_sql("""
                 ALTER TABLE chunks
                 ALTER COLUMN embedding TYPE vector(1536);
             """)
             print("chunks.embedding is vector(1536)")
     except Exception as e:
+        # It's OK if table doesn't exist yet or type already correct
         print(f"Column alter error (ignored): {e}")
 
     # 3) Optional: ANN index. Safe default is to skip on tiny plans.
@@ -60,12 +67,10 @@ def ensure_vector_schema(engine):
         print("SKIP_IVFFLAT=1 -> not creating IVFFLAT index (using full-scan)")
         return
 
-    lists = int(os.getenv("IVFFLAT_LISTS", "4"))  # keep very small on free tiers
+    lists = int(os.getenv("IVFFLAT_LISTS", "4"))  # keep small on free tiers
     try:
         with engine.begin() as conn:
-            conn.exec_driver_sql("""
-                DROP INDEX IF EXISTS ix_chunks_embedding_cosine;
-            """)
+            conn.exec_driver_sql("DROP INDEX IF EXISTS ix_chunks_embedding_cosine;")
             conn.exec_driver_sql(f"""
                 CREATE INDEX IF NOT EXISTS ix_chunks_embedding_cosine
                 ON chunks USING ivfflat (embedding vector_cosine_ops)
@@ -75,6 +80,17 @@ def ensure_vector_schema(engine):
     except Exception as e:
         # Just log and continue; the app must still start.
         print(f"Index ensure error (ignored): {e}")
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    # Bootstrap pgvector + column + (optional) index
+    ensure_vector_schema(engine)
+
+    # Create tables after the vector type is available
+    Base.metadata.create_all(bind=engine)
+
+    print("Startup bootstrap complete")
 
 # --- FastAPI app ---
 app = FastAPI(
