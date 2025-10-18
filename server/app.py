@@ -204,25 +204,29 @@ if os.getenv("APP_DEBUG", "1") == "1":
 # -----------------------------------------------------------------------------
 # STARTUP: ensure pgvector extension, then tables & index
 # -----------------------------------------------------------------------------
-# server/app.py
+# --------------------------------------------------------------------
+# server/app.py  — startup bootstrap (copy–paste)
+# --------------------------------------------------------------------
+from fastapi import FastAPI
 
-from .db import engine
-# from .schema_bootstrap import ensure_vector_schema  # if you moved it
+# If ensure_vector_schema lives in this same file, remove this import
+# and call the function directly. Otherwise, import it:
+from .schema_bootstrap import ensure_vector_schema  # or: from .app import ensure_vector_schema
+
+from .db import engine, Base
+
+app = FastAPI(title="AI Agent Builder — Quickstart")
 
 @app.on_event("startup")
 def _startup() -> None:
-    # Make sure you pass the ENGINE, not a Connection/Session/Transaction
+    # IMPORTANT: pass the ENGINE (not a Connection/Session/Transaction)
     ensure_vector_schema(engine)
-    # ...rest of your startup...
 
-    # 1) ensure extension exists
-    from .db import engine  # keep your import style
-    with engine.connect() as conn:
-        ensure_vector_schema(conn)
-        conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector;")
-
-    # 2) create tables now that 'vector' type exists
+    # Create tables after pgvector/type/index bootstrap
     Base.metadata.create_all(bind=engine)
+
+    print("Startup bootstrap complete")
+
 
 # --- Health ---
 @app.get("/health/db")
