@@ -657,16 +657,13 @@ async def ask(payload: AskIn, db: Session = Depends(get_db), request: Request = 
     return AskOut(answer=answer, citations=citations[:5])
 
 
-# -----------------------------------------------------------------------------
-# ASK (streaming SSE)
-# -----------------------------------------------------------------------------
 @app.post("/ask/stream")
 async def ask_stream(payload: AskIn, request: Request, db: Session = Depends(get_db)):
     try:
         # If a Bearer token is present, validate it (dev with x-api-key still passes middleware)
-        _hdr = request.headers.get("authorization") or request.headers.get("Authorization")
-        if _hdr:
-            _ = verify_site_bearer_header(_hdr)
+        _ = request.headers.get("authorization") or request.headers.get("Authorization")
+        if _:
+            _ = verify_site_bearer_header(_)
 
         # Embed the question
         q_emb = embed_query(payload.question)
@@ -675,29 +672,36 @@ async def ask_stream(payload: AskIn, request: Request, db: Session = Depends(get
         rows = search_mmr(db, q_emb, k=payload.k or 6, pool=48, lambda_mult=0.7)
         print("[ask/stream] candidates:", [{"title": t, "url": u} for (_txt, t, u, _emb) in rows])
 
-        if not rows:
-            async def err():
-                yield "event: start\ndata: {}\n\n"
-                yield "data: I couldn’t find any matching chunks yet. Try ingesting a source first, or broaden your question.\n\n"
-                yield "event: end\ndata: {}\n\n"
-            return StreamingResponse(err(), media_type="text/event-stream")
-
         # Build contexts & persona
-        contexts = [(text_val[:1000], url, 0.0) for (text_val, title, url, _emb) in rows]
+        contexts = [(text[:1000], url, 0.0) for (text, title, url, _emb) in rows]
         persona_key = getattr(payload, "bot_id", None) or "default"
         persona = BOT_PROFILES.get(persona_key)
         persona_prefix = persona["system_prefix"] if persona else ""
 
-        ENQUIRY_URL = os.getenv("ENQUIRY_URL", "")  # e.g., https://tally.so/r/your-form-id
-        ...
-        system, user = build_prompt(payload.question, contexts, cta_url=ENQUIRY_URL or None)
+        system, user = build_prompt(payload.question, contexts)
         if persona_prefix:
             system = persona_prefix + "\n\n" + system
 
+        # Prepare citation links we will stream at the end
+        link_list = []
+        for (_text, title, url, _emb) in rows:
+            if url:
+                link_list.append({"title": title or url, "url": url})
+
         async def gen():
+            # handshake
             yield "event: start\ndata: {}\n\n"
+
+            # stream the model text (no links here)
             async for tok in stream_chat(system, user):
+                # standard 'message' event (no explicit 'event:' line)
                 yield f"data: {tok}\n\n"
+
+            # now send citations separately so UI can render nice clickable links
+            if link_list:
+                yield "event: citations\n"
+                yield f"data: {json.dumps(link_list)}\n\n"
+
             yield "event: end\ndata: {}\n\n"
 
         return StreamingResponse(
