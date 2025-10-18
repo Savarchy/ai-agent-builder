@@ -24,30 +24,52 @@ from .retriever import search_mmr                  # uses pgvector + mmr
 from .prompting import build_prompt
 from .db import engine
 
-def ensure_vector_schema(db):
-    # 1) extension
-    db.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+def ensure_vector_schema(engine):
+    """
+    Makes schema safe for pgvector on small plans.
+    - CREATE EXTENSION in AUTOCOMMIT
+    - ALTER COLUMN -> vector(1536)
+    - Try to create small IVFFLAT index, but never crash if it fails
+    """
+    # 1) CREATE EXTENSION must be outside a transaction.
+    try:
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector;")
+            print("pgvector extension ensured")
+    except Exception as e:
+        # Do not crash on extension error; just log it.
+        print(f"Extension ensure error (ignored): {e}")
 
-    # 2) column -> 1536 dims (idempotent)
-    db.execute(text("""
-        ALTER TABLE chunks
-        ALTER COLUMN embedding TYPE vector(1536);
-    """))
+    # 2) Ensure column is correct type/dimensions.
+    try:
+        with engine.begin() as conn:  # transactional (will auto-rollback on error)
+            conn.exec_driver_sql("""
+                ALTER TABLE chunks
+                ALTER COLUMN embedding TYPE vector(1536);
+            """)
+            print("chunks.embedding is vector(1536)")
+    except Exception as e:
+        print(f"Column alter error (ignored): {e}")
 
-    # 3) ivfflat index (optional & small)
-    if os.getenv("SKIP_IVFFLAT", "0") == "1":
-        print("SKIP_IVFFLAT=1 -> not creating IVFFLAT index")
+    # 3) Optional: ANN index. Safe default is to skip on tiny plans.
+    if os.getenv("SKIP_IVFFLAT", "1") == "1":
+        print("SKIP_IVFFLAT=1 -> not creating IVFFLAT index (using full-scan)")
         return
 
-    lists = int(os.getenv("IVFFLAT_LISTS", "8"))  # keep small on free tiers
+    lists = int(os.getenv("IVFFLAT_LISTS", "4"))  # keep very small on free tiers
     try:
-        db.execute(text(f"""
-            CREATE INDEX IF NOT EXISTS ix_chunks_embedding_cosine
-            ON chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = {lists});
-        """))
-        print(f"IVFFLAT index ensured with lists={lists}")
+        with engine.begin() as conn:
+            conn.exec_driver_sql("""
+                DROP INDEX IF EXISTS ix_chunks_embedding_cosine;
+            """)
+            conn.exec_driver_sql(f"""
+                CREATE INDEX IF NOT EXISTS ix_chunks_embedding_cosine
+                ON chunks USING ivfflat (embedding vector_cosine_ops)
+                WITH (lists = {lists});
+            """)
+            print(f"IVFFLAT index ensured with lists={lists}")
     except Exception as e:
-        # Don't crash the service; ANN index is an optimization.
+        # Just log and continue; the app must still start.
         print(f"Index ensure error (ignored): {e}")
 
 # --- FastAPI app ---
