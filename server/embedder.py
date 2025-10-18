@@ -1,96 +1,76 @@
 # server/embedder.py
+from __future__ import annotations
+
 import os
 import httpx
-from typing import List, Union
 
-OLLAMA_BASE = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
+# -------- Normal OpenAI (default) --------
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
-def _ensure_2d(v: Union[List[float], List[List[float]]]) -> List[List[float]]:
-    # Turn [f,f,...] into [[f,f,...]] if needed
-    if not v:
-        return []
-    return v if isinstance(v[0], list) else [v]  # type: ignore[index]
+# -------- Azure OpenAI (optional) --------
+AZURE_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")              # e.g. https://myres.openai.azure.com
+AZURE_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+AZURE_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+AZURE_EMBED_DEPLOYMENT = os.getenv("AZURE_OPENAI_EMBED_MODEL")   # your *deployment* name
 
-def _parse_embed_response(data) -> List[List[float]]:
+def _openai_client() -> httpx.Client:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not set")
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    return httpx.Client(base_url=OPENAI_BASE_URL, headers=headers, timeout=httpx.Timeout(30.0))
+
+def _azure_embed_url() -> str:
+    if not (AZURE_ENDPOINT and AZURE_API_KEY and AZURE_EMBED_DEPLOYMENT):
+        return ""  # not using Azure
+    return f"{AZURE_ENDPOINT}/openai/deployments/{AZURE_EMBED_DEPLOYMENT}/embeddings?api-version={AZURE_API_VERSION}"
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
     """
-    Normalize possible Ollama responses into List[List[float]].
-    Supports:
-      - /api/embed => { model, embeddings: [[...], ...] }
-      - /api/embeddings (new) => { data: [{embedding:[...]}] }
-      - /api/embeddings (old) => { embedding:[...] }  (single)
+    Returns embeddings for a list of texts. Uses Azure if its env vars are present;
+    otherwise uses the public OpenAI API.
     """
-    if isinstance(data, dict):
-        if "embeddings" in data:                    # /api/embed
-            return _ensure_2d(data["embeddings"])
-        if "data" in data and isinstance(data["data"], list):  # new /api/embeddings
-            return [row.get("embedding", []) for row in data["data"]]
-        if "embedding" in data:                     # old /api/embeddings single
-            return _ensure_2d(data["embedding"])
-    return []
-
-def embed_texts(texts: List[str]) -> List[List[float]]:
     if not texts:
         return []
-    # 1) Try /api/embed (the one you already verified works)
-    try:
-        with httpx.Client(timeout=60) as client:
-            r = client.post(
-                f"{OLLAMA_BASE}/api/embed",
-                json={"model": EMBED_MODEL, "input": texts},
-            )
-        if r.status_code == 200:
-            vecs = _parse_embed_response(r.json())
-            if vecs and all(isinstance(v, list) and v for v in vecs):
-                return vecs
-            else:
-                # fallthrough to try /api/embeddings
-                pass
-        else:
-            # fall through and try /api/embeddings as a second attempt
-            pass
-    except Exception:
-        # try fallback
-        pass
 
-    # 2) Fallback: /api/embeddings (supports "input", also "prompt" for single)
+    # ---- Azure path (if configured) ----
+    azure_url = _azure_embed_url()
+    if azure_url:
+        headers = {"api-key": AZURE_API_KEY, "Content-Type": "application/json"}
+        payload = {"input": texts}
+        try:
+            with httpx.Client(timeout=httpx.Timeout(30.0)) as c:
+                r = c.post(azure_url, headers=headers, json=payload)
+                r.raise_for_status()
+                data = r.json()
+                return [item["embedding"] for item in data["data"]]
+        except httpx.ConnectError as e:
+            raise RuntimeError(f"Embedding backend failed (connect): {e}") from e
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"Embedding backend HTTP {e.response.status_code}: {e.response.text}") from e
+        except Exception as e:
+            raise RuntimeError(f"Embedding backend failed: {e}") from e
+
+    # ---- Normal OpenAI path ----
+    payload = {"model": EMBEDDING_MODEL, "input": texts}
     try:
-        payload = {"model": EMBED_MODEL, "input": texts}
-        with httpx.Client(timeout=60) as client:
-            r = client.post(f"{OLLAMA_BASE}/api/embeddings", json=payload)
-        if r.status_code == 200:
-            vecs = _parse_embed_response(r.json())
-            if vecs and all(isinstance(v, list) and v for v in vecs):
-                return vecs
-            # As a last resort, embed one by one with "prompt"
-            out: List[List[float]] = []
-            with httpx.Client(timeout=60) as client:
-                for t in texts:
-                    rr = client.post(
-                        f"{OLLAMA_BASE}/api/embeddings",
-                        json={"model": EMBED_MODEL, "prompt": t},
-                    )
-                    if rr.status_code != 200:
-                        raise RuntimeError(f"Ollama embeddings error: {rr.text}")
-                    vv = _parse_embed_response(rr.json())
-                    if not vv:
-                        raise RuntimeError("No embedding returned for a chunk")
-                    out.append(vv[0])
-            return out
-        else:
-            raise RuntimeError(f"Ollama embeddings HTTP {r.status_code}: {r.text}")
+        with _openai_client() as c:
+            r = c.post("/embeddings", json=payload)
+            r.raise_for_status()
+            data = r.json()
+            return [item["embedding"] for item in data["data"]]
+    except httpx.ConnectError as e:
+        # This is the classic “[Errno 111] Connection refused” case
+        raise RuntimeError(f"Embedding backend failed (connect): {e}") from e
+    except httpx.HTTPStatusError as e:
+        raise RuntimeError(f"Embedding backend HTTP {e.response.status_code}: {e.response.text}") from e
     except Exception as e:
         raise RuntimeError(f"Embedding backend failed: {e}") from e
-# --- single-query convenience wrapper ---
-from typing import List
 
-def embed_query(text: str) -> List[float]:
-    """
-    Return a single embedding vector for one query string.
-    Uses embed_texts() under the hood and returns the first vector.
-    """
-    vecs = embed_texts([text])
-    if not vecs or not vecs[0]:
-        raise RuntimeError("No embedding returned for query")
-    return vecs[0]
-
+def embed_query(text: str) -> list[float]:
+    embs = embed_texts([text])
+    return embs[0] if embs else []
