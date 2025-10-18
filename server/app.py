@@ -172,32 +172,26 @@ def verify_site_bearer_header(auth_header: str | None):
 
 
 # --- Gate: allow either valid Bearer (site) OR x-api-key ---
+PUBLIC_EXACT = {"/", "/openapi.json", "/health", "/health/db", "/favicon.ico"}
+PUBLIC_PREFIXES = ("/ui", "/docs", "/static")  # everything under these is public
+
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
-    # --- Always allow CORS preflight ---
+    # Always allow CORS preflight
     if request.method == "OPTIONS":
-        # Respond manually, browsers need 200 for preflight
-        return JSONResponse(
-            status_code=200,
-            content={"ok": True},
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-                "Access-Control-Allow-Headers": "Authorization, X-API-Key, Content-Type",
-                "Access-Control-Max-Age": "86400",
-            },
-        )
-
-    # --- Always allow health/docs/openapi ---
-    if request.url.path.startswith(("/docs", "/openapi.json", "/health")):
         return await call_next(request)
 
-    # --- Auth logic (Bearer or x-api-key) ---
+    path = request.url.path or "/"
+    if path in PUBLIC_EXACT or any(path.startswith(p) for p in PUBLIC_PREFIXES):
+        return await call_next(request)
+
+    # 1) Try Bearer site token
     auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
-        _payload = verify_site_bearer_header(auth_header)
+        _ = verify_site_bearer_header(auth_header)  # raises on invalid
         return await call_next(request)
 
+    # 2) Fallback to x-api-key (admin/dev)
     key = request.headers.get("x-api-key")
     if API_KEY and key == API_KEY:
         return await call_next(request)
