@@ -95,6 +95,16 @@ app.mount("/ui", StaticFiles(directory=Path(__file__).parent / "static", html=Tr
 def _home():
     return RedirectResponse("/ui/")
     
+@app.get("/favicon.ico")
+def favicon():
+    # 1x1 transparent png
+    import base64
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4nGP4////fwYGBgYGAAApPwKQ8O7D8wAAAABJRU5ErkJggg=="
+    )
+    from fastapi.responses import Response
+    return Response(png, media_type="image/png")
+    
 # --- OpenAPI with API key button (for /docs try-it-out) ---
 def custom_openapi():
     if app.openapi_schema:
