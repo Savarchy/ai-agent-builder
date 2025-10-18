@@ -358,68 +358,126 @@ def ingest_text(payload: IngestTextIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"/ingest/text failed: {e}")
 
 
-# ---------------------------------------------------------------------
-# INGEST: URL (lenient + returns title)
-# ---------------------------------------------------------------------
-from urllib.parse import urlparse
+# -----------------------------------------------------------------------------
+# INGEST: URL (with strong headers + optional Jina Reader fallback)
+# -----------------------------------------------------------------------------
+from urllib.parse import urlparse, urlunparse
 
 MAX_FETCH_MB = float(os.getenv("MAX_FETCH_MB", "3"))
-MAX_FETCH_CHARS = int(MAX_FETCH_MB * 1024 * 1024)
+MAX_FETCH_CHARS = int(MAX_FETCH_MB * 1024 * 1024)  # approx chars ~= bytes
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
+JINA_READER_FALLBACK = os.getenv("JINA_READER_FALLBACK", "0") == "1"
+
+def _normalize_http_url(u: str) -> str:
+    u = (u or "").strip()
+    if not u:
+        raise HTTPException(status_code=400, detail="URL is required.")
+    if not u.lower().startswith(("http://", "https://")):
+        u = "https://" + u
+    p = urlparse(u)
+    if not p.netloc:
+        raise HTTPException(status_code=400, detail="Invalid URL.")
+    return urlunparse(p)
+
+def _nice_fetch(url: str) -> requests.Response:
+    # Beefier headers to look like a real browser
+    hdrs = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;"
+            "q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Referer": url,
+    }
+    return requests.get(
+        url,
+        headers=hdrs,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+        allow_redirects=True,
+    )
+
+def _jina_reader_url(orig: str) -> str:
+    # Jina Reader pattern: https://r.jina.ai/http://{host}{path}?{query}
+    # We always pass http://host...; most sites redirect to https server-side.
+    p = urlparse(orig)
+    path = p.path or "/"
+    if p.query:
+        path = f"{path}?{p.query}"
+    return f"https://r.jina.ai/http://{p.netloc}{path}"
 
 @app.post("/ingest/url")
 def ingest_url(payload: IngestURLIn, db: Session = Depends(get_db)):
-    # --- normalize ---
-    raw = (payload.url or "").strip()
-    if not raw:
-        raise HTTPException(status_code=400, detail="URL is required.")
+    # 0) Normalize URL
+    target_url = _normalize_http_url(str(payload.url))
 
-    if not raw.lower().startswith(("http://", "https://")):
-        raw = "https://" + raw
-
-    pr = urlparse(raw)
-    if not pr.netloc:
-        raise HTTPException(status_code=400, detail="URL looks invalid.")
-
-    # --- fetch ---
+    # 1) Try direct fetch
     try:
-        r = requests.get(
-            raw,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
-                )
-            },
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        r.raise_for_status()
+        r = _nice_fetch(target_url)
+        if r.status_code >= 400:
+            # If blocked, optionally try fallback
+            if r.status_code in (401, 403, 451) and JINA_READER_FALLBACK:
+                try:
+                    jurl = _jina_reader_url(target_url)
+                    jr = _nice_fetch(jurl)
+                    jr.raise_for_status()
+                    text_body = jr.text or ""
+                    text_body = text_body.strip()
+                    if not text_body:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Reader fallback returned no content for url: {target_url}",
+                        )
+                    # Guard & pass to ingest_text
+                    if len(text_body) > MAX_FETCH_CHARS:
+                        text_body = text_body[:MAX_FETCH_CHARS] + (
+                            f"\n\n[Note: content truncated at ~{MAX_FETCH_MB} MB for processing.]"
+                        )
+                    title = payload.title or target_url
+                    return ingest_text(
+                        IngestTextIn(title=title, text=text_body, url=target_url),
+                        db,
+                    )
+                except requests.RequestException as e:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Blocked by site (status {r.status_code}). Fallback failed: {e}",
+                    )
+            # No fallback, bubble a clear error
+            raise HTTPException(
+                status_code=400,
+                detail=f"Fetch failed: {r.status_code} Client Error: "
+                       f"{r.reason or 'Error'} for url: {target_url}",
+            )
+        # OK
+        html = r.text or ""
     except requests.RequestException as e:
         raise HTTPException(status_code=400, detail=f"Fetch failed: {e}")
 
-    # --- extract text ---
-    soup = BeautifulSoup(r.text, "html.parser")
+    # 2) Extract text (basic HTML to text)
+    soup = BeautifulSoup(html, "html.parser")
     for s in soup(["script", "style", "noscript", "svg"]):
         s.decompose()
-
     text_body = soup.get_text(separator="\n", strip=True)
     if not text_body:
         raise HTTPException(status_code=400, detail="No extractable text.")
 
-    # --- size guard ---
+    # 3) Guard: cap the size
     if len(text_body) > MAX_FETCH_CHARS:
-        text_body = text_body[:MAX_FETCH_CHARS] + (
-            f"\n\n[Note: content truncated at ~{MAX_FETCH_MB} MB for processing.]"
-        )
+        text_body = text_body[:MAX_FETCH_CHARS]
+        text_body += f"\n\n[Note: content truncated at ~{MAX_FETCH_MB} MB for processing.]"
 
-    # --- title & store via /ingest/text ---
-    title = payload.title or (soup.title.get_text(strip=True) if soup.title else raw)
-    result = ingest_text(IngestTextIn(title=title, text=text_body, url=raw), db)
+    # 4) Title
+    title = payload.title or (soup.title.get_text(strip=True) if soup.title else target_url)
 
-    # Ensure UI can read a title from the response
-    if isinstance(result, dict):
-        result["title"] = title
-    return result
+    # 5) Hand off to text ingest (chunk + embed)
+    return ingest_text(IngestTextIn(title=title, text=text_body, url=target_url), db)
 
 
 
