@@ -358,21 +358,38 @@ def ingest_text(payload: IngestTextIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"/ingest/text failed: {e}")
 
 
-# -----------------------------------------------------------------------------
-# INGEST: URL (with fetch & text size guard)
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# INGEST: URL (lenient + returns title)
+# ---------------------------------------------------------------------
+from urllib.parse import urlparse
+
 MAX_FETCH_MB = float(os.getenv("MAX_FETCH_MB", "3"))
-MAX_FETCH_CHARS = int(MAX_FETCH_MB * 1024 * 1024)  # approx chars ~= bytes
+MAX_FETCH_CHARS = int(MAX_FETCH_MB * 1024 * 1024)
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
 
 @app.post("/ingest/url")
 def ingest_url(payload: IngestURLIn, db: Session = Depends(get_db)):
-    # Fetch page
+    # --- normalize ---
+    raw = (payload.url or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="URL is required.")
+
+    if not raw.lower().startswith(("http://", "https://")):
+        raw = "https://" + raw
+
+    pr = urlparse(raw)
+    if not pr.netloc:
+        raise HTTPException(status_code=400, detail="URL looks invalid.")
+
+    # --- fetch ---
     try:
         r = requests.get(
-            str(payload.url),
+            raw,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+                )
             },
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
@@ -380,21 +397,30 @@ def ingest_url(payload: IngestURLIn, db: Session = Depends(get_db)):
     except requests.RequestException as e:
         raise HTTPException(status_code=400, detail=f"Fetch failed: {e}")
 
-    # Extract text
+    # --- extract text ---
     soup = BeautifulSoup(r.text, "html.parser")
     for s in soup(["script", "style", "noscript", "svg"]):
         s.decompose()
+
     text_body = soup.get_text(separator="\n", strip=True)
     if not text_body:
         raise HTTPException(status_code=400, detail="No extractable text.")
 
-    # Guard: cap the size of text we process
+    # --- size guard ---
     if len(text_body) > MAX_FETCH_CHARS:
-        text_body = text_body[:MAX_FETCH_CHARS]
-        text_body += f"\n\n[Note: content truncated at ~{MAX_FETCH_MB} MB for processing.]"
+        text_body = text_body[:MAX_FETCH_CHARS] + (
+            f"\n\n[Note: content truncated at ~{MAX_FETCH_MB} MB for processing.]"
+        )
 
-    title = payload.title or (soup.title.get_text(strip=True) if soup.title else str(payload.url))
-    return ingest_text(IngestTextIn(title=title, text=text_body, url=str(payload.url)), db)
+    # --- title & store via /ingest/text ---
+    title = payload.title or (soup.title.get_text(strip=True) if soup.title else raw)
+    result = ingest_text(IngestTextIn(title=title, text=text_body, url=raw), db)
+
+    # Ensure UI can read a title from the response
+    if isinstance(result, dict):
+        result["title"] = title
+    return result
+
 
 
 # -----------------------------------------------------------------------------
