@@ -161,33 +161,28 @@
   </section>
 </div>
 
-<!-- ==== SINGLE, CLEAN SCRIPT BLOCK ==== -->
 <script>
-  /************ EDIT THESE FOR YOUR SETUP ************/
-  // Use the same origin your /ui page was served from (works on Render)
-  const API_BASE   = window.location.origin;
-
-  // For quick testing you can use your x-api-key (same one that works in /docs).
-  // For production, set API_KEY = "" and paste a minted site JWT into SITE_TOKEN.
-  const API_KEY    = "564654sdfjshdfkjhg6579687sf465";   // or "" if you’ll use SITE_TOKEN
-  const SITE_TOKEN = "";                      // put a site JWT here for prod
+  /************ CONFIG ************/
+  const API_BASE   = window.location.origin;               // your Render origin
+  const API_KEY    = "564654sdfjshdfkjhg6579687sf465";     // or "" if using SITE_TOKEN
+  const SITE_TOKEN = "";                                   // put a minted site JWT here for prod
   const DEFAULT_BOT_ID = "default";
 
   const $ = s => document.querySelector(s);
 
-  // Choose auth automatically: Bearer in prod, x-api-key in dev
+  // Auth headers
   function authHeaders(json = true) {
     const h = {};
     if (json) h["Content-Type"] = "application/json";
     if (SITE_TOKEN && SITE_TOKEN.length > 10) {
-      h["Authorization"] = "Bearer " + SITE_TOKEN; // production embed
+      h["Authorization"] = "Bearer " + SITE_TOKEN;
     } else if (API_KEY) {
-      h["x-api-key"] = API_KEY;                    // dev / testing
+      h["x-api-key"] = API_KEY;
     }
     return h;
   }
 
-  /************ API helpers ************/
+  // Basic API helpers
   async function apiGet(path) {
     return fetch(`${API_BASE}${path}`, { method: "GET", headers: authHeaders(false) });
   }
@@ -195,14 +190,13 @@
     return fetch(`${API_BASE}${path}`, { method: "POST", headers: authHeaders(true), body: JSON.stringify(body) });
   }
   async function apiPostForm(path, formData) {
-    const h = authHeaders(false); // let browser set boundary automatically
+    const h = authHeaders(false);
     return fetch(`${API_BASE}${path}`, { method: "POST", headers: h, body: formData });
   }
 
-  /************ Health indicator ************/
+  // Health
   async function health() {
     try {
-      // Your API exposes /health/db
       const r = await apiGet("/health/db");
       const j = await r.json();
       $("#health").textContent = j.ok ? "API OK ✅" : "API error ❌";
@@ -210,27 +204,16 @@
       $("#health").textContent = "API not reachable ❌";
     }
   }
-  health();
 
-  /************ Tabs ************/
+  // Tabs
   function tab(n){
     ['t1','t2','t3'].forEach((x,i)=>{
       $('#'+x).classList.toggle('active', i===n-1);
       $('#p'+(i+1)).style.display = i===n-1 ? 'block' : 'none';
     });
   }
-  $('#t1').onclick=()=>tab(1);
-  $('#t2').onclick=()=>tab(2);
-  $('#t3').onclick=()=>tab(3);
-  
-window.addEventListener('error', (e) => {
-  console.error('Global JS error:', e.message, e.filename, e.lineno, e.colno);
-});
-window.addEventListener('unhandledrejection', (e) => {
-  console.error('Unhandled promise rejection:', e.reason);
-});
 
-  /************ Progress helpers ************/
+  // Progress helpers
   function setProgress(id, pct, done=false) {
     const wrap = document.getElementById(id);
     if (!wrap) return;
@@ -270,17 +253,17 @@ window.addEventListener('unhandledrejection', (e) => {
     const meta = document.createElement('div');
     meta.className = 'source-meta';
     const safeTitle = title || '(untitled)';
-    const link = url ? `<a href="${url}" target="_blank">${safeTitle}</a>` : safeTitle;
+    const link = url ? `<a href="${url}" target="_blank" rel="noopener">${safeTitle}</a>` : safeTitle;
     meta.innerHTML = `${link} &nbsp; • &nbsp; ${chunks ?? '?'} chunk${(chunks|0)===1?'':'s'}`;
     card.appendChild(pill); card.appendChild(meta);
     list.prepend(card);
   }
 
-  /************ Personas dropdown ************/
+  // Personas
   async function loadBots() {
     try {
       const res = await apiGet("/bots");
-      const bots = await res.json(); // expecting [{ id, name }, ...]
+      const bots = await res.json(); // [{id,name}]
       const sel = document.getElementById("bot");
       sel.innerHTML = "";
       for (const b of bots) {
@@ -299,18 +282,15 @@ window.addEventListener('unhandledrejection', (e) => {
       sel.innerHTML = `<option value="${DEFAULT_BOT_ID}">${DEFAULT_BOT_ID}</option>`;
     }
   }
-  document.addEventListener("DOMContentLoaded", loadBots);
 
-  /************ Ingest: Text ************/
-  document.getElementById('ingText').onclick = async () => {
+  /************ Ingest actions ************/
+  async function handleIngestText() {
     const title = document.getElementById('title').value.trim();
     const canon = document.getElementById('canon').value.trim();
     const text  = document.getElementById('txt').value.trim();
     const status = document.getElementById('s1');
     resetProgress('pr1'); status.textContent='';
-
     if (!title || !text) { status.textContent='Please provide a Title and some text.'; return; }
-
     pulseProgress('pr1');
     try {
       const res = await apiPost('/ingest/text', { title, text, url: canon || null });
@@ -324,15 +304,13 @@ window.addEventListener('unhandledrejection', (e) => {
     } finally {
       setTimeout(()=>resetProgress('pr1'), 900);
     }
-  };
+  }
 
-  /************ Ingest: URL ************/
-  document.getElementById('ingURL').onclick = async () => {
+  async function handleIngestURL() {
     const url = document.getElementById('url').value.trim();
     const status = document.getElementById('s2');
     resetProgress('pr2'); status.textContent='';
     if (!url) { status.textContent='Please enter a URL.'; return; }
-
     pulseProgress('pr2');
     try {
       const res = await apiPost('/ingest/url', { url });
@@ -346,10 +324,9 @@ window.addEventListener('unhandledrejection', (e) => {
     } finally {
       setTimeout(()=>resetProgress('pr2'), 900);
     }
-  };
+  }
 
-  /************ Ingest: PDF ************/
-  document.getElementById('ingPDF').onclick = async () => {
+  async function handleIngestPDF() {
     const file = document.getElementById('pdf').files[0];
     const title = document.getElementById('pdfTitle').value.trim();
     const url   = document.getElementById('pdfUrl').value.trim();
@@ -375,158 +352,156 @@ window.addEventListener('unhandledrejection', (e) => {
     } finally {
       setTimeout(()=>resetProgress('pr3'), 900);
     }
-  };
+  }
 
   /************ Chat helpers ************/
   function addBubble(text, who){
     const b = document.createElement('div');
     b.className = 'bubble ' + (who==='user'?'user':'bot');
     b.innerHTML = (text || '').replace(/\n/g,'<br/>');
-    document.getElementById('log').appendChild(b);
-    document.getElementById('log').scrollTop = document.getElementById('log').scrollHeight;
+    const log = document.getElementById('log');
+    log.appendChild(b);
+    log.scrollTop = log.scrollHeight;
     return b;
   }
   function showTyping(){
     const t = document.createElement('div');
     t.className = 'typing'; t.id = 'typing';
     t.innerHTML = '<div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>';
-    document.getElementById('log').appendChild(t);
-    document.getElementById('log').scrollTop = document.getElementById('log').scrollHeight;
+    const log = document.getElementById('log');
+    log.appendChild(t);
+    log.scrollTop = log.scrollHeight;
   }
   function hideTyping(){ const t = document.getElementById('typing'); if (t) t.remove(); }
 
-  /************ Ask (STREAM via SSE) ************/
   function currentBotId() {
     const sel = document.getElementById('bot');
     return (sel && sel.value) ? sel.value : DEFAULT_BOT_ID;
   }
 
+  // ASK (SSE)
   async function askNow() {
-  const qEl = document.getElementById('q');
-  const q = qEl.value.trim();
-  if (!q) return;
-    
-// ===== Robust wiring for Ask button + Enter =====
-(function wireAsk() {
-  function attach() {
-    const askBtn = document.getElementById('ask');
     const qEl = document.getElementById('q');
+    const q = (qEl?.value || "").trim();
+    if (!q) return;
 
-    if (!askBtn || !qEl) {
-      console.warn('Ask wiring: elements not found yet, retrying…');
-      setTimeout(attach, 150);
-      return;
-    }
+    addBubble(q, 'user');
+    qEl.value = '';
 
-    // Avoid double listeners on hot reloads
-    askBtn._wired && askBtn.removeEventListener('click', askBtn._wired);
-    qEl._wired && qEl.removeEventListener('keydown', qEl._wired);
+    const bot = addBubble('', 'bot');
+    showTyping();
 
-    askBtn._wired = (e) => {
-      e.preventDefault();
-      console.log('[Ask] click');
-      askNow();
-    };
-    qEl._wired = (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        console.log('[Ask] enter');
-        askNow();
+    try {
+      const resp = await fetch(`${API_BASE}/ask/stream`, {
+        method: 'POST',
+        headers: authHeaders(true),
+        body: JSON.stringify({ question: q, k: 8, bot_id: currentBotId() })
+      });
+
+      hideTyping();
+
+      if (!resp.ok || !resp.body) {
+        const txt = await resp.text();
+        throw new Error(`Request failed: ${resp.status} ${txt}`);
       }
-    };
 
-    askBtn.addEventListener('click', askBtn._wired);
-    qEl.addEventListener('keydown', qEl._wired);
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
 
-    console.log('Ask wiring attached ✅');
-  }
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', attach);
-  } else {
-    attach();
-  }
-})();
+        buf += dec.decode(value, { stream: true });
 
-  // user bubble
-  addBubble(q, 'user');
-  qEl.value = '';
+        // SSE messages separated by blank line
+        const messages = buf.split('\n\n');
+        buf = messages.pop();
 
-  // bot bubble + typing
-  const bot = addBubble('', 'bot');
-  showTyping();
+        for (const msg of messages) {
+          let ev = 'message';
+          let data = '';
 
-  try {
-    const resp = await fetch(`${API_BASE}/ask/stream`, {
-      method: 'POST',
-      headers: authHeaders(true),
-      body: JSON.stringify({ question: q, k: 8, bot_id: currentBotId() })
-    });
+          for (const line of msg.split('\n')) {
+            if (line.startsWith('event:')) ev = line.slice(6).trim();
+            else if (line.startsWith('data:')) data += line.slice(5);
+          }
 
-    hideTyping();
+          if (ev === 'citations') {
+            // clickable links only
+            try {
+              const links = JSON.parse(data || '[]');
+              if (Array.isArray(links) && links.length) {
+                const cite = document.createElement('div');
+                cite.className = 'cite';
+                cite.innerHTML = links
+                  .map(l => `<a href="${l.url}" target="_blank" rel="noopener">${(l.title || l.url)}</a>`)
+                  .join(' &middot; ');
+                bot.appendChild(cite);
+              }
+            } catch { /* ignore malformed citations */ }
+            continue;
+          }
 
-    if (!resp.ok || !resp.body) {
-      const txt = await resp.text();
-      throw new Error(`Request failed: ${resp.status} ${txt}`);
-    }
-
-    const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      buf += dec.decode(value, { stream: true });
-
-      // SSE messages are separated by a blank line
-      const messages = buf.split('\n\n');
-      buf = messages.pop();
-
-      for (const msg of messages) {
-        // Parse SSE fields: event: X \n data: Y
-        let ev = 'message';
-        let data = '';
-
-        for (const line of msg.split('\n')) {
-          if (line.startsWith('event:')) ev = line.slice(6).trim();
-          else if (line.startsWith('data:')) data += line.slice(5);
-        }
-
-        if (ev === 'citations') {
-          // render ONLY clickable links beneath the answer
-          try {
-            const links = JSON.parse(data || '[]');
-            if (Array.isArray(links) && links.length) {
-              const cite = document.createElement('div');
-              cite.className = 'cite';
-              cite.innerHTML = links
-                .map(l => `<a href="${l.url}" target="_blank" rel="noopener">${(l.title || l.url)}</a>`)
-                .join(' &middot; ');
-              bot.appendChild(cite);
-            }
-          } catch { /* ignore malformed citations */ }
-          continue;
-        }
-
-        // normal token data (from the model) — keep it clean (no [1], “Sources”, etc.)
-        if (data) {
-          const clean = data
-            .replace(/\[\d+\]/g, '')                 // drop [1], [2], …
-            .replace(/\s*Sources?:.*$/i, '');        // drop trailing "Sources: …"
-          bot.innerHTML += clean.replace(/\n/g, '<br/>');
-
-          const log = document.getElementById('log');
-          log.scrollTop = log.scrollHeight;
+          // normal token data
+          if (data) {
+            const clean = data
+              .replace(/\[\d+\]/g, '')                 // drop [1], [2], …
+              .replace(/\s*Sources?:.*$/i, '');        // drop trailing "Sources: …"
+            bot.innerHTML += clean.replace(/\n/g, '<br/>');
+            const log = document.getElementById('log');
+            log.scrollTop = log.scrollHeight;
+          }
         }
       }
+    } catch (e) {
+      hideTyping();
+      addBubble('⚠️ Error: ' + e.message, 'bot');
     }
-  } catch (e) {
-    hideTyping();
-    addBubble('⚠️ Error: ' + e.message, 'bot');
   }
-}
+
+  /************ Wire everything AFTER DOM is ready ************/
+  function wireUI() {
+    // Tabs
+    $('#t1')?.addEventListener('click', () => tab(1));
+    $('#t2')?.addEventListener('click', () => tab(2));
+    $('#t3')?.addEventListener('click', () => tab(3));
+
+    // Ingest buttons
+    $('#ingText')?.addEventListener('click', handleIngestText);
+    $('#ingURL')?.addEventListener('click', handleIngestURL);
+    $('#ingPDF')?.addEventListener('click', handleIngestPDF);
+
+    // Ask button and Enter key
+    const askBtn = $('#ask');
+    const qEl    = $('#q');
+
+    if (askBtn) {
+      askBtn.addEventListener('click', (e) => { e.preventDefault(); askNow(); });
+      askBtn.disabled = false; // just in case
+    }
+    if (qEl) {
+      qEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); askNow(); }
+      });
+    }
+  }
+
+  // Global error logs (helpful if anything breaks)
+  window.addEventListener('error', (e) => {
+    console.error('Global JS error:', e.message, e.filename, e.lineno, e.colno);
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    console.error('Unhandled promise rejection:', e.reason);
+  });
+
+  // Boot
+  document.addEventListener('DOMContentLoaded', () => {
+    health();
+    loadBots();
+    wireUI();
+  });
 </script>
 </body>
 </html>
