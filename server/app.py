@@ -1,14 +1,16 @@
 # server/app.py
 
 # --- stdlib / third-party imports ---
-import os, io, time, jwt, requests
+import os, io, time, json, jwt, requests
 from uuid import uuid4
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from urllib.parse import urlparse, urlunparse
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import text as sql_text, text
 
@@ -25,23 +27,28 @@ from .llm import stream_chat
 # Load .env early
 load_dotenv()
 
-from urllib.parse import urlparse
-
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
 def _normalize_url(u: str | None) -> str | None:
+    """
+    Ensure an absolute http(s) URL (used for canonicals and citations).
+    """
     if not u:
         return None
     u = u.strip()
     if not u:
         return None
+    if not u.lower().startswith(("http://", "https://")):
+        u = "https://" + u
     p = urlparse(u)
-    if not p.scheme:
-        # no scheme supplied → default to https
-        return "https://" + u
-    return u
+    if not p.netloc:
+        return None
+    return urlunparse(p)
 
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
 # PgVector bootstrap that works on small DB plans
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
 def ensure_vector_schema(engine):
     """
     Makes schema safe for pgvector on small plans.
@@ -55,7 +62,6 @@ def ensure_vector_schema(engine):
             conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector;")
             print("pgvector extension ensured")
     except Exception as e:
-        # Do not crash on extension error; just log it.
         print(f"Extension ensure error (ignored): {e}")
 
     # 2) Ensure column is correct type/dimensions.
@@ -67,7 +73,6 @@ def ensure_vector_schema(engine):
             """)
             print("chunks.embedding is vector(1536)")
     except Exception as e:
-        # It's OK if table/index doesn't exist yet or already correct.
         print(f"Column alter error (ignored): {e}")
 
     # 3) Optional: ANN index. Safe default is to skip on tiny plans.
@@ -75,7 +80,7 @@ def ensure_vector_schema(engine):
         print("SKIP_IVFFLAT=1 -> not creating IVFFLAT index (using full-scan)")
         return
 
-    lists = int(os.getenv("IVFFLAT_LISTS", "4"))  # keep small on free tiers
+    lists = int(os.getenv("IVFFLAT_LISTS", "4"))  # small on free tiers
     try:
         with engine.begin() as conn:
             conn.exec_driver_sql("DROP INDEX IF EXISTS ix_chunks_embedding_cosine;")
@@ -86,20 +91,18 @@ def ensure_vector_schema(engine):
             """)
             print(f"IVFFLAT index ensured with lists={lists}")
     except Exception as e:
-        # Just log and continue; the app must still start.
         print(f"Index ensure error (ignored): {e}")
 
-# -----------------------------------------------------------------------------
-# FastAPI app
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# FastAPI app + static /ui
+# ---------------------------------------------------------------------
+from pathlib import Path
+
 app = FastAPI(
     title="AI Agent Builder — Quickstart",
     debug=True,
     swagger_ui_parameters={"persistAuthorization": True},
 )
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
-from pathlib import Path
 
 # Serve /ui/* from server/static, and redirect "/" -> /ui/
 app.mount("/ui", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="ui")
@@ -107,7 +110,7 @@ app.mount("/ui", StaticFiles(directory=Path(__file__).parent / "static", html=Tr
 @app.get("/")
 def _home():
     return RedirectResponse("/ui/")
-    
+
 @app.get("/favicon.ico")
 def favicon():
     # 1x1 transparent png
@@ -115,9 +118,8 @@ def favicon():
     png = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4nGP4////fwYGBgYGAAApPwKQ8O7D8wAAAABJRU5ErkJggg=="
     )
-    from fastapi.responses import Response
     return Response(png, media_type="image/png")
-    
+
 # --- OpenAPI with API key button (for /docs try-it-out) ---
 def custom_openapi():
     if app.openapi_schema:
@@ -145,7 +147,6 @@ def custom_openapi():
 
 app.openapi = custom_openapi
 
-
 # --- CORS ---
 ALLOWED_ORIGINS = [
     "http://127.0.0.1:5500",
@@ -166,8 +167,7 @@ app.add_middleware(
     expose_headers=["Content-Type", "Cache-Control", "X-Requested-With"],
 )
 
-
-# --- Auth config ---
+# --- Auth config + middleware (Bearer or x-api-key) ---
 API_KEY = os.getenv("API_KEY", "dev-secret-123")
 SITE_JWT_SECRET = os.getenv("SITE_JWT_SECRET", "change_me")
 
@@ -193,10 +193,8 @@ def verify_site_bearer_header(auth_header: str | None):
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-
-# --- Gate: allow either valid Bearer (site) OR x-api-key ---
 PUBLIC_EXACT = {"/", "/openapi.json", "/health", "/health/db", "/favicon.ico"}
-PUBLIC_PREFIXES = ("/ui", "/docs", "/static")  # everything under these is public
+PUBLIC_PREFIXES = ("/ui", "/docs", "/static")
 
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
@@ -221,24 +219,6 @@ async def auth_gate(request: Request, call_next):
 
     return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
 
-    if request.url.path.startswith(("/docs", "/openapi.json", "/health")):
-        return await call_next(request)
-
-    # 1) Try Bearer site token
-    auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        _ = verify_site_bearer_header(auth_header)  # raises on invalid
-        return await call_next(request)
-
-    # 2) Fallback to x-api-key (admin/dev)
-    key = request.headers.get("x-api-key")
-    if API_KEY and key == API_KEY:
-        return await call_next(request)
-
-    # Neither provided/valid
-    return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
-
-
 # --- Simple logging ---
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -251,7 +231,6 @@ async def log_requests(request: Request, call_next):
         print(f"!!! {request.method} {request.url.path} -> {e}")
         raise
 
-
 # --- Optional debug exception JSON ---
 if os.getenv("APP_DEBUG", "1") == "1":
     @app.exception_handler(Exception)
@@ -261,20 +240,14 @@ if os.getenv("APP_DEBUG", "1") == "1":
         print("TRACEBACK:\n", tb)
         return JSONResponse(status_code=500, content={"detail": str(exc), "trace": tb})
 
-
-# -----------------------------------------------------------------------------
-# STARTUP: ensure pgvector extension, then tables & (optional) index
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# STARTUP: ensure pgvector extension, then tables
+# ---------------------------------------------------------------------
 @app.on_event("startup")
 def _startup() -> None:
-    # IMPORTANT: pass the ENGINE (not a Connection/Session/Transaction)
     ensure_vector_schema(engine)
-
-    # Create tables after pgvector/type/index bootstrap
     Base.metadata.create_all(bind=engine)
-
     print("Startup bootstrap complete")
-
 
 # --- Health ---
 @app.get("/health/db")
@@ -282,7 +255,6 @@ def health_db():
     with engine.connect() as c:
         c.execute(text("select 1"))
     return {"ok": True}
-
 
 # --- Dev-only clear (guarded by APP_DEBUG) ---
 if os.getenv("APP_DEBUG", "1") == "1":
@@ -292,7 +264,6 @@ if os.getenv("APP_DEBUG", "1") == "1":
         db.execute(sql_text("DELETE FROM documents;"))
         db.commit()
         return {"ok": True}
-
 
 # --- Bot profiles & /bots ---
 BOT_PROFILES = {
@@ -306,7 +277,6 @@ BOT_PROFILES = {
 def list_bots():
     return [{"id": k, "name": v["name"]} for k, v in BOT_PROFILES.items()]
 
-
 # --- Mint site token (admin/dev via x-api-key) ---
 @app.post("/bots/{bot_id}/site-token")
 def mint_site_token(bot_id: str, body: dict, request: Request):
@@ -316,23 +286,23 @@ def mint_site_token(bot_id: str, body: dict, request: Request):
     ttl = int((body or {}).get("ttl_minutes", 60))
     return {"token": issue_site_token(bot_id, domain, ttl)}
 
-
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
 # INGEST: TEXT
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
 @app.post("/ingest/text")
 def ingest_text(payload: IngestTextIn, db: Session = Depends(get_db)):
     try:
         text_in = (payload.text or "").strip()
         if not text_in:
             raise HTTPException(status_code=400, detail="No text provided.")
-        url_str = str(payload.url) if getattr(payload, "url", None) else None
+
+        url_str = _normalize_url(getattr(payload, "url", None))
 
         # 1) Document (let DB generate UUID; NOTE: uses Document.text)
-        doc = Document(title=payload.title, url=url_str, text=text_in)  # <-- uses Document.text
+        doc = Document(title=payload.title, url=url_str, text=text_in)
         db.add(doc)
         db.commit()
-        db.refresh(doc)  # doc.id is now set
+        db.refresh(doc)
 
         # 2) Chunking
         parts = split_text(text_in)
@@ -353,7 +323,7 @@ def ingest_text(payload: IngestTextIn, db: Session = Depends(get_db)):
                     raise RuntimeError("Embedding failed for a chunk")
                 embs.append(one[0])
 
-        # 4) Write chunks (let DB generate UUIDs)
+        # 4) Write chunks
         for i, (p, emb) in enumerate(zip(parts, embs)):
             db.add(Chunk(
                 document_id=doc.id,
@@ -370,27 +340,13 @@ def ingest_text(payload: IngestTextIn, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"/ingest/text failed: {e}")
 
-
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
 # INGEST: URL (with strong headers + optional Jina Reader fallback)
-# -----------------------------------------------------------------------------
-from urllib.parse import urlparse, urlunparse
-
+# ---------------------------------------------------------------------
 MAX_FETCH_MB = float(os.getenv("MAX_FETCH_MB", "3"))
 MAX_FETCH_CHARS = int(MAX_FETCH_MB * 1024 * 1024)  # approx chars ~= bytes
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
 JINA_READER_FALLBACK = os.getenv("JINA_READER_FALLBACK", "0") == "1"
-
-def _normalize_http_url(u: str) -> str:
-    u = (u or "").strip()
-    if not u:
-        raise HTTPException(status_code=400, detail="URL is required.")
-    if not u.lower().startswith(("http://", "https://")):
-        u = "https://" + u
-    p = urlparse(u)
-    if not p.netloc:
-        raise HTTPException(status_code=400, detail="Invalid URL.")
-    return urlunparse(p)
 
 def _nice_fetch(url: str) -> requests.Response:
     # Beefier headers to look like a real browser
@@ -418,7 +374,6 @@ def _nice_fetch(url: str) -> requests.Response:
 
 def _jina_reader_url(orig: str) -> str:
     # Jina Reader pattern: https://r.jina.ai/http://{host}{path}?{query}
-    # We always pass http://host...; most sites redirect to https server-side.
     p = urlparse(orig)
     path = p.path or "/"
     if p.query:
@@ -428,7 +383,9 @@ def _jina_reader_url(orig: str) -> str:
 @app.post("/ingest/url")
 def ingest_url(payload: IngestURLIn, db: Session = Depends(get_db)):
     # 0) Normalize URL
-    target_url = _normalize_http_url(str(payload.url))
+    target_url = _normalize_url(str(payload.url))
+    if not target_url:
+        raise HTTPException(status_code=400, detail="Invalid URL.")
 
     # 1) Try direct fetch
     try:
@@ -440,14 +397,12 @@ def ingest_url(payload: IngestURLIn, db: Session = Depends(get_db)):
                     jurl = _jina_reader_url(target_url)
                     jr = _nice_fetch(jurl)
                     jr.raise_for_status()
-                    text_body = jr.text or ""
-                    text_body = text_body.strip()
+                    text_body = (jr.text or "").strip()
                     if not text_body:
                         raise HTTPException(
                             status_code=400,
                             detail=f"Reader fallback returned no content for url: {target_url}",
                         )
-                    # Guard & pass to ingest_text
                     if len(text_body) > MAX_FETCH_CHARS:
                         text_body = text_body[:MAX_FETCH_CHARS] + (
                             f"\n\n[Note: content truncated at ~{MAX_FETCH_MB} MB for processing.]"
@@ -462,18 +417,15 @@ def ingest_url(payload: IngestURLIn, db: Session = Depends(get_db)):
                         status_code=400,
                         detail=f"Blocked by site (status {r.status_code}). Fallback failed: {e}",
                     )
-            # No fallback, bubble a clear error
             raise HTTPException(
                 status_code=400,
-                detail=f"Fetch failed: {r.status_code} Client Error: "
-                       f"{r.reason or 'Error'} for url: {target_url}",
+                detail=f"Fetch failed: {r.status_code} Client Error: {r.reason or 'Error'} for url: {target_url}",
             )
-        # OK
         html = r.text or ""
     except requests.RequestException as e:
         raise HTTPException(status_code=400, detail=f"Fetch failed: {e}")
 
-    # 2) Extract text (basic HTML to text)
+    # 2) Extract text
     soup = BeautifulSoup(html, "html.parser")
     for s in soup(["script", "style", "noscript", "svg"]):
         s.decompose()
@@ -481,39 +433,23 @@ def ingest_url(payload: IngestURLIn, db: Session = Depends(get_db)):
     if not text_body:
         raise HTTPException(status_code=400, detail="No extractable text.")
 
-    # 3) Guard: cap the size
+    # 3) Guard
     if len(text_body) > MAX_FETCH_CHARS:
-        text_body = text_body[:MAX_FETCH_CHARS]
-        text_body += f"\n\n[Note: content truncated at ~{MAX_FETCH_MB} MB for processing.]"
+        text_body = text_body[:MAX_FETCH_CHARS] + f"\n\n[Note: content truncated at ~{MAX_FETCH_MB} MB for processing.]"
 
     # 4) Title
     title = payload.title or (soup.title.get_text(strip=True) if soup.title else target_url)
 
-    # 5) Hand off to text ingest (chunk + embed)
+    # 5) Hand off
     return ingest_text(IngestTextIn(title=title, text=text_body, url=target_url), db)
 
-
-
-# -----------------------------------------------------------------------------
-# INGEST: PDF (robust: size cap, page cap, magic header, dual parser)
-# -----------------------------------------------------------------------------
-import io as _io
-from urllib.parse import urlparse
-
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
 # INGEST: PDF (defensive, clearer errors, bigger size allowed)
-# -----------------------------------------------------------------------------
-from fastapi import UploadFile, File, Form
-
-# Allow up to 50 MB uploads (Render/Cloudflare hard limit is typically 100 MB)
+# ---------------------------------------------------------------------
+# Allow up to 50 MB uploads
 MAX_PDF_MB = int(os.getenv("MAX_PDF_MB", "50"))
 MAX_PDF_BYTES = MAX_PDF_MB * 1024 * 1024
-
-# Cap pages we actually parse (prevents super-long runs)
 MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "200"))
-
-# Even if the PDF is big, cap text we send to chunk/embeddings (MB of raw text)
-# ~1 char ≈ 1 byte (roughly), so 2 MB of text is already a LOT of tokens.
 MAX_PDF_TEXT_MB = float(os.getenv("MAX_PDF_TEXT_MB", "2.5"))
 MAX_PDF_TEXT_CHARS = int(MAX_PDF_TEXT_MB * 1024 * 1024)
 
@@ -524,27 +460,17 @@ async def ingest_pdf(
     url: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
-    """
-    Accept a PDF (multipart/form-data), extract text safely, trim it,
-    then reuse /ingest/text. Returns 4xx on user issues instead of 502 crashes.
-    """
     try:
-        # --- 0) Basic validation
         fname = (file.filename or "").lower()
         ctype = (file.content_type or "").lower()
         if not (fname.endswith(".pdf") or "pdf" in ctype):
             raise HTTPException(status_code=400, detail="Please upload a PDF file (.pdf).")
 
-        # --- 1) Size guard (prevent OOM)
-        blob = await file.read(MAX_PDF_BYTES + 1)  # +1 lets us detect overflow
+        blob = await file.read(MAX_PDF_BYTES + 1)
         if len(blob) > MAX_PDF_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"PDF too large. Limit is {MAX_PDF_MB} MB."
-            )
+            raise HTTPException(status_code=413, detail=f"PDF too large. Limit is {MAX_PDF_MB} MB.")
 
-        # --- 2) Parse text with page cap
-        import pdfplumber, io
+        import pdfplumber
         pages_text: list[str] = []
         try:
             with pdfplumber.open(io.BytesIO(blob)) as pdf:
@@ -555,43 +481,33 @@ async def ingest_pdf(
                     if t:
                         pages_text.append(t)
                 if len(pdf.pages) > MAX_PDF_PAGES:
-                    pages_text.append(
-                        f"[Note: PDF truncated at {MAX_PDF_PAGES} pages for processing.]"
-                    )
+                    pages_text.append(f"[Note: PDF truncated at {MAX_PDF_PAGES} pages for processing.]")
         except Exception as e:
-            # Parsing issues (encrypted/corrupt) → 400
             raise HTTPException(status_code=400, detail=f"PDF parse failed: {e}")
 
         full_text = "\n\n".join(pages_text).strip()
         if not full_text:
             raise HTTPException(status_code=400, detail="No selectable text found in PDF.")
 
-        # --- 3) Text-size cap before chunking/embeddings (prevents huge bills/timeouts)
         if len(full_text) > MAX_PDF_TEXT_CHARS:
             full_text = full_text[:MAX_PDF_TEXT_CHARS] + \
                 f"\n\n[Note: content truncated at ~{MAX_PDF_TEXT_MB} MB of text for processing.]"
 
-        # --- 4) Reuse /ingest/text path (this will chunk + embed)
         safe_title = title or (file.filename or "PDF")
-        return ingest_text(IngestTextIn(title=safe_title, text=full_text, url=url), db)
+        safe_url = _normalize_url(url)
+        return ingest_text(IngestTextIn(title=safe_title, text=full_text, url=safe_url), db)
 
     except HTTPException:
-        # pass through explicit 4xx
         raise
     except Exception as e:
-        # Anything unexpected → 500 with a clear message (and your APP_DEBUG logs the traceback)
         raise HTTPException(status_code=500, detail=f"/ingest/pdf failed: {e}")
 
-
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
 # ASK (non-stream)
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
 @app.post("/ask", response_model=AskOut)
 async def ask(payload: AskIn, db: Session = Depends(get_db), request: Request = None):
-    # Embed the question
     q_emb = embed_query(payload.question)
-
-    # Retrieve candidate chunks
     rows = search_mmr(db, q_emb, k=payload.k or 6, pool=48, lambda_mult=0.7)
 
     if not rows:
@@ -600,30 +516,24 @@ async def ask(payload: AskIn, db: Session = Depends(get_db), request: Request = 
             citations=[],
         )
 
-    # Build contexts & citations
     contexts, citations = [], []
     for (text_val, title, url, _emb) in rows:
         contexts.append((text_val[:1000], url, 0.0))
         citations.append(Citation(
             title=title or "",
-            url=url or "",
+            url=_normalize_url(url) or "",
             snippet=text_val[:240].replace("\n", " "),
             score=0.0,
         ))
 
-    # Persona
     persona_key = getattr(payload, "bot_id", None) or "default"
     persona = BOT_PROFILES.get(persona_key)
     persona_prefix = persona["system_prefix"] if persona else ""
 
-    # Prompt
-    ENQUIRY_URL = os.getenv("ENQUIRY_URL", "")  # e.g., https://tally.so/r/your-form-id
-    ...
-    system, user = build_prompt(payload.question, contexts, cta_url=ENQUIRY_URL or None)
+    system, user = build_prompt(payload.question, contexts)
     if persona_prefix:
         system = persona_prefix + "\n\n" + system
 
-    # Consume the async generator into a single string
     chunks = []
     async for tok in stream_chat(system, user):
         chunks.append(tok)
@@ -631,23 +541,20 @@ async def ask(payload: AskIn, db: Session = Depends(get_db), request: Request = 
 
     return AskOut(answer=answer, citations=citations[:5])
 
-
+# ---------------------------------------------------------------------
+# ASK (streaming SSE) — emits a separate `citations` event with clickable links
+# ---------------------------------------------------------------------
 @app.post("/ask/stream")
 async def ask_stream(payload: AskIn, request: Request, db: Session = Depends(get_db)):
     try:
-        # If a Bearer token is present, validate it (dev with x-api-key still passes middleware)
         _ = request.headers.get("authorization") or request.headers.get("Authorization")
         if _:
             _ = verify_site_bearer_header(_)
 
-        # Embed the question
         q_emb = embed_query(payload.question)
-
-        # Retrieve candidate chunks
         rows = search_mmr(db, q_emb, k=payload.k or 6, pool=48, lambda_mult=0.7)
         print("[ask/stream] candidates:", [{"title": t, "url": u} for (_txt, t, u, _emb) in rows])
 
-        # Build contexts & persona
         contexts = [(text[:1000], url, 0.0) for (text, title, url, _emb) in rows]
         persona_key = getattr(payload, "bot_id", None) or "default"
         persona = BOT_PROFILES.get(persona_key)
@@ -657,22 +564,18 @@ async def ask_stream(payload: AskIn, request: Request, db: Session = Depends(get
         if persona_prefix:
             system = persona_prefix + "\n\n" + system
 
-        # Prepare citation links we will stream at the end
+        # Prepare normalized citation links to stream at the end
         link_list = []
-        for (_text, title, url, _emb) in rows:
-            if url:
-                link_list.append({"title": title or url, "url": url})
+        for (_text, title, url, _emb) in rows[:5]:
+            nu = _normalize_url(url)
+            if nu:
+                link_list.append({"title": title or nu, "url": nu})
 
         async def gen():
-            # handshake
             yield "event: start\ndata: {}\n\n"
-
-            # stream the model text (no links here)
             async for tok in stream_chat(system, user):
-                # standard 'message' event (no explicit 'event:' line)
                 yield f"data: {tok}\n\n"
 
-            # now send citations separately so UI can render nice clickable links
             if link_list:
                 yield "event: citations\n"
                 yield f"data: {json.dumps(link_list)}\n\n"
