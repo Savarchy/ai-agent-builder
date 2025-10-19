@@ -150,7 +150,10 @@
     <h3>Ask</h3>
     <div class="chatlog" id="log"></div>
     <div class="composer">
-      <input id="q" type="text" placeholder="Ask something…">
+      <input id="q" type="text" placeholder="Ask something…"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();askNow();}">
+      <button type="button" class="btn" id="ask" onclick="askNow()">Ask</button>
+
       <!-- Persona dropdown -->
       <select id="bot" style="padding:10px 12px;border-radius:12px;border:1px solid #2d2f3a;background:#0f172a;color:#e5e7eb;">
         <option value="">Loading personas…</option>
@@ -384,7 +387,7 @@
     const qEl = document.getElementById('q');
     const q = (qEl?.value || "").trim();
     if (!q) return;
-
+    window.askNow = askNow;
     addBubble(q, 'user');
     qEl.value = '';
 
