@@ -90,6 +90,28 @@
     .composer .ask{ width:100%; }
     }
     @media (max-width: 860px) { .chatlog { max-height: calc(100vh - 320px); } }
+    /* --- Fix Ask button spacing/alignment --- */
+    .composer {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: 160px minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    padding-right: 0;         /* Ensure grid doesn't pad the right side */
+    }
+
+    /* Remove default padding from parent chat card, so Ask aligns flush */
+    .card.chat {
+    padding-right: 0;
+    }
+
+    /* Keep Ask button from sitting slightly inside the card */
+    .composer .ask {
+    margin-right: 0;          /* Ensure no right margin */
+    border-top-right-radius: 12px;
+    border-bottom-right-radius: 12px;
+    height: 100%;
+    }
   </style>
   <style>
     @keyframes fadeIn { from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:translateY(0)} }
