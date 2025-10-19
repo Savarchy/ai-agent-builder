@@ -222,6 +222,13 @@
   $('#t1').onclick=()=>tab(1);
   $('#t2').onclick=()=>tab(2);
   $('#t3').onclick=()=>tab(3);
+  
+window.addEventListener('error', (e) => {
+  console.error('Global JS error:', e.message, e.filename, e.lineno, e.colno);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('Unhandled promise rejection:', e.reason);
+});
 
   /************ Progress helpers ************/
   function setProgress(id, pct, done=false) {
