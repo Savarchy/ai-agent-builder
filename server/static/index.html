@@ -39,12 +39,45 @@
     .bubble .cite { margin-top:6px; font-size:.85rem; color:#93a0b4; }
     .bubble .cite a { color:#93c5fd; text-decoration:none; }
     .bubble .cite a:hover { text-decoration:underline; }
-    .composer { margin-top:10px; display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center; }
-    .composer input[type="text"] {
-      width:100%; padding:12px 14px; border-radius:12px; border:1px solid #2d2f3a; background:#0f172a; color:#e5e7eb; outline:none;
+    .composer{
+    margin-top:10px;
+    display:grid;
+    grid-template-columns: auto 1fr auto; /* persona | question | ask */
+    gap:10px;
+    align-items:center;
     }
-    .composer input[type="text"]:focus { border-color:#6366f1; box-shadow:0 0 0 2px rgba(99,102,241,.35); }
-    .composer .btn { padding:10px 18px; border-radius:12px; background:linear-gradient(90deg,#3b82f6,#8b5cf6); color:#fff; font-weight:600; border:0; cursor:pointer; }
+
+    .composer .persona{
+    min-width:160px;
+    padding:10px 12px;
+    border-radius:12px;
+    border:1px solid #2d2f3a;
+    background:#0f172a;
+    color:#e5e7eb;
+    }
+
+    .composer input[type="text"]{
+    width:100%;
+    padding:12px 14px;
+    border-radius:12px;
+    border:1px solid #2d2f3a;
+    background:#0f172a;
+    color:#e5e7eb;
+    outline:none;
+    }
+    .composer input[type="text"]:focus{
+    border-color:#6366f1;
+    box-shadow:0 0 0 2px rgba(99,102,241,.35);
+    }
+
+    .composer .ask{
+    white-space:nowrap;           /* keep it on one line */
+    padding:10px 18px;
+    border-radius:12px;
+    background:linear-gradient(90deg,#3b82f6,#8b5cf6);
+    color:#fff; font-weight:600; border:0; cursor:pointer;
+    }
+
     @media (max-width: 860px) { .chatlog { max-height: calc(100vh - 320px); } }
   </style>
   <style>
@@ -150,16 +183,16 @@
     <h3>Ask</h3>
     <div class="chatlog" id="log"></div>
     <div class="composer">
-      <input id="q" type="text" placeholder="Ask something…"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();askNow();}">
-      <button type="button" class="btn" id="ask" onclick="askNow()">Ask</button>
+     <!-- Persona first, consistent placement -->
+     <select id="bot" class="persona">
+     <option value="">Loading personas…</option>
+     </select>
 
-      <!-- Persona dropdown -->
-      <select id="bot" style="padding:10px 12px;border-radius:12px;border:1px solid #2d2f3a;background:#0f172a;color:#e5e7eb;">
-        <option value="">Loading personas…</option>
-      </select>
+     <!-- Question second -->
+     <input id="q" type="text" placeholder="Ask something…">
 
-      <button class="btn" id="ask">Ask</button>
+     <!-- Ask button last -->
+     <button class="btn ask" id="ask" type="button">Ask</button>
     </div>
   </section>
 </div>
