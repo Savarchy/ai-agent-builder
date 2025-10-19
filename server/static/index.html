@@ -39,10 +39,11 @@
     .bubble .cite { margin-top:6px; font-size:.85rem; color:#93a0b4; }
     .bubble .cite a { color:#93c5fd; text-decoration:none; }
     .bubble .cite a:hover { text-decoration:underline; }
+    /* Layout the composer: Persona | Question | Ask */
     .composer{
     margin-top:10px;
     display:grid;
-    grid-template-columns: auto 1fr auto; /* persona | question | ask */
+    grid-template-columns: 160px minmax(0,1fr) auto; /* <- minmax(0,1fr) prevents overflow */
     gap:10px;
     align-items:center;
     }
@@ -56,7 +57,9 @@
     color:#e5e7eb;
     }
 
+    /* Make sure the text box can actually shrink inside the grid */
     .composer input[type="text"]{
+    min-width:0;                  /* <- key line */
     width:100%;
     padding:12px 14px;
     border-radius:12px;
@@ -70,14 +73,22 @@
     box-shadow:0 0 0 2px rgba(99,102,241,.35);
     }
 
+    /* Keep the Ask button a tidy pill and stop wrap/overhang */
     .composer .ask{
-    white-space:nowrap;           /* keep it on one line */
+    width:80px;                   /* consistent width so edges align */
+    text-align:center;
+    white-space:nowrap;
     padding:10px 18px;
     border-radius:12px;
     background:linear-gradient(90deg,#3b82f6,#8b5cf6);
     color:#fff; font-weight:600; border:0; cursor:pointer;
     }
-
+    @media (max-width: 640px){
+    .composer{
+    grid-template-columns: 1fr;  /* stack */
+    }
+    .composer .ask{ width:100%; }
+    }
     @media (max-width: 860px) { .chatlog { max-height: calc(100vh - 320px); } }
   </style>
   <style>
