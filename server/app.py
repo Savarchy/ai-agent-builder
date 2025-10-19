@@ -488,9 +488,12 @@ import io as _io
 from urllib.parse import urlparse
 from fastapi import UploadFile, File, Form
 
-MAX_PDF_MB     = int(os.getenv("MAX_PDF_MB", "10"))
-MAX_PDF_BYTES  = MAX_PDF_MB * 1024 * 1024
-MAX_PDF_PAGES  = int(os.getenv("MAX_PDF_PAGES", "200"))
+# -----------------------------------------------------------------------------
+# INGEST: PDF (with size & pages limits)
+# -----------------------------------------------------------------------------
+MAX_PDF_MB = int(os.getenv("MAX_PDF_MB", "50"))    # was "10"
+MAX_PDF_BYTES = MAX_PDF_MB * 1024 * 1024
+MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "200"))
 MAX_PDF_CHARS  = int(os.getenv("MAX_PDF_CHARS", str(1_000_000)))  # ~1MB text cap
 
 def _normalize_url(u: str | None) -> str | None:
