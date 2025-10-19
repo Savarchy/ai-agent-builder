@@ -443,15 +443,9 @@ def ingest_url(payload: IngestURLIn, db: Session = Depends(get_db)):
     # 5) Hand off
     return ingest_text(IngestTextIn(title=title, text=text_body, url=target_url), db)
 
-# ---------------------------------------------------------------------
-# INGEST: PDF (defensive, clearer errors, bigger size allowed)
-# ---------------------------------------------------------------------
-# Allow up to 50 MB uploads
-MAX_PDF_MB = int(os.getenv("MAX_PDF_MB", "50"))
-MAX_PDF_BYTES = MAX_PDF_MB * 1024 * 1024
-MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "200"))
-MAX_PDF_TEXT_MB = float(os.getenv("MAX_PDF_TEXT_MB", "2.5"))
-MAX_PDF_TEXT_CHARS = int(MAX_PDF_TEXT_MB * 1024 * 1024)
+from fastapi import UploadFile, File, Form, HTTPException
+from sqlalchemy.orm import Session
+import io, re
 
 @app.post("/ingest/pdf")
 async def ingest_pdf(
@@ -460,47 +454,99 @@ async def ingest_pdf(
     url: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
+    """
+    Accept a PDF, extract text robustly (handles kerning/gapped text),
+    cap size & pages, tidy spacing, then reuse /ingest/text.
+    """
+
+    # ---------- helpers ----------
+    def _looks_spaced_out(txt: str) -> bool:
+        """Heuristic: if too many single-letter tokens, text likely has gaps."""
+        toks = txt.split()
+        if not toks:
+            return False
+        singles = sum(1 for t in toks if len(t) == 1)
+        return (singles / len(toks)) > 0.25
+
+    def _tidy_text(s: str) -> str:
+        """Normalize whitespace and remove stray spaces around punctuation/brackets."""
+        s = s.replace("\u00A0", " ")                               # NBSP -> space
+        s = re.sub(r'-\s*\n\s*', '', s)                            # remove hyphen line-breaks
+        s = re.sub(r'\s*\n\s*', '\n', s)                           # trim around newlines
+        s = re.sub(r'\s+([,.;:!?%)\]])', r'\1', s)                 # no space before punctuation
+        s = re.sub(r'([(\\[({])\s+', r'\1', s)                     # no space just after opening bracket
+        s = re.sub(r'[ \t]{2,}', ' ', s)                           # collapse multi-spaces
+        return s.strip()
+
+    # ---------- basic validation ----------
+    fname = (file.filename or "").lower()
+    ctype = (file.content_type or "").lower()
+    if not (fname.endswith(".pdf") or "pdf" in ctype):
+        raise HTTPException(status_code=400, detail="Please upload a PDF file (.pdf).")
+
+    # ---------- size guard ----------
+    blob = await file.read(MAX_PDF_BYTES + 1)  # +1 lets us detect overflow
+    if len(blob) > MAX_PDF_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"PDF too large. Limit is {MAX_PDF_MB} MB."
+        )
+
+    # ---------- parse pages ----------
+    pages_text: list[str] = []
     try:
-        fname = (file.filename or "").lower()
-        ctype = (file.content_type or "").lower()
-        if not (fname.endswith(".pdf") or "pdf" in ctype):
-            raise HTTPException(status_code=400, detail="Please upload a PDF file (.pdf).")
-
-        blob = await file.read(MAX_PDF_BYTES + 1)
-        if len(blob) > MAX_PDF_BYTES:
-            raise HTTPException(status_code=413, detail=f"PDF too large. Limit is {MAX_PDF_MB} MB.")
-
         import pdfplumber
-        pages_text: list[str] = []
-        try:
-            with pdfplumber.open(io.BytesIO(blob)) as pdf:
-                page_limit = min(len(pdf.pages), MAX_PDF_PAGES)
-                for i in range(page_limit):
-                    p = pdf.pages[i]
-                    t = (p.extract_text() or "").strip()
-                    if t:
-                        pages_text.append(t)
-                if len(pdf.pages) > MAX_PDF_PAGES:
-                    pages_text.append(f"[Note: PDF truncated at {MAX_PDF_PAGES} pages for processing.]")
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"PDF parse failed: {e}")
+        with pdfplumber.open(io.BytesIO(blob)) as pdf:
+            page_limit = min(len(pdf.pages), MAX_PDF_PAGES)
+            for i in range(page_limit):
+                p = pdf.pages[i]
 
-        full_text = "\n\n".join(pages_text).strip()
-        if not full_text:
-            raise HTTPException(status_code=400, detail="No selectable text found in PDF.")
+                # 1) Try text with tighter tolerances (helps kerning-heavy PDFs)
+                t = (p.extract_text(x_tolerance=2, y_tolerance=2) or "").strip()
 
-        if len(full_text) > MAX_PDF_TEXT_CHARS:
-            full_text = full_text[:MAX_PDF_TEXT_CHARS] + \
-                f"\n\n[Note: content truncated at ~{MAX_PDF_TEXT_MB} MB of text for processing.]"
+                # 2) If it looks gappy, rebuild from words
+                if not t or _looks_spaced_out(t):
+                    words = p.extract_words(
+                        use_text_flow=True,        # keep natural reading order
+                        keep_blank_chars=False
+                    )
+                    t = " ".join(w.get("text", "") for w in words).strip()
 
-        safe_title = title or (file.filename or "PDF")
-        safe_url = _normalize_url(url)
-        return ingest_text(IngestTextIn(title=safe_title, text=full_text, url=safe_url), db)
+                t = _tidy_text(t)
+                if t:
+                    pages_text.append(t)
 
+            if len(pdf.pages) > MAX_PDF_PAGES:
+                pages_text.append(
+                    f"[Note: PDF truncated at {MAX_PDF_PAGES} pages for processing.]"
+                )
     except HTTPException:
         raise
     except Exception as e:
+        # Encrypted/corrupt or parsing error → 400 (user-fixable)
+        raise HTTPException(status_code=400, detail=f"PDF parse failed: {e}")
+
+    full_text = "\n\n".join(pages_text).strip()
+    if not full_text:
+        raise HTTPException(status_code=400, detail="No selectable text found in PDF.")
+
+    # ---------- cap text before chunk/embedding ----------
+    if len(full_text) > MAX_PDF_TEXT_CHARS:
+        full_text = (
+            full_text[:MAX_PDF_TEXT_CHARS]
+            + f"\n\n[Note: content truncated at ~{MAX_PDF_TEXT_MB} MB of text for processing.]"
+        )
+
+    # ---------- hand off to text ingestion (chunks + embeddings) ----------
+    safe_title = title or (file.filename or "PDF")
+    try:
+        return ingest_text(IngestTextIn(title=safe_title, text=full_text, url=url), db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Anything unexpected during ingest
         raise HTTPException(status_code=500, detail=f"/ingest/pdf failed: {e}")
+
 
 # ---------------------------------------------------------------------
 # ASK (non-stream)
