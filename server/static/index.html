@@ -398,6 +398,48 @@
   const qEl = document.getElementById('q');
   const q = qEl.value.trim();
   if (!q) return;
+    
+// ===== Robust wiring for Ask button + Enter =====
+(function wireAsk() {
+  function attach() {
+    const askBtn = document.getElementById('ask');
+    const qEl = document.getElementById('q');
+
+    if (!askBtn || !qEl) {
+      console.warn('Ask wiring: elements not found yet, retrying…');
+      setTimeout(attach, 150);
+      return;
+    }
+
+    // Avoid double listeners on hot reloads
+    askBtn._wired && askBtn.removeEventListener('click', askBtn._wired);
+    qEl._wired && qEl.removeEventListener('keydown', qEl._wired);
+
+    askBtn._wired = (e) => {
+      e.preventDefault();
+      console.log('[Ask] click');
+      askNow();
+    };
+    qEl._wired = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        console.log('[Ask] enter');
+        askNow();
+      }
+    };
+
+    askBtn.addEventListener('click', askBtn._wired);
+    qEl.addEventListener('keydown', qEl._wired);
+
+    console.log('Ask wiring attached ✅');
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', attach);
+  } else {
+    attach();
+  }
+})();
 
   // user bubble
   addBubble(q, 'user');
