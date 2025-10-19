@@ -486,76 +486,23 @@ def ingest_url(payload: IngestURLIn, db: Session = Depends(get_db)):
 # -----------------------------------------------------------------------------
 import io as _io
 from urllib.parse import urlparse
+
+# -----------------------------------------------------------------------------
+# INGEST: PDF (defensive, clearer errors, bigger size allowed)
+# -----------------------------------------------------------------------------
 from fastapi import UploadFile, File, Form
 
-# -----------------------------------------------------------------------------
-# INGEST: PDF (with size & pages limits)
-# -----------------------------------------------------------------------------
-MAX_PDF_MB = int(os.getenv("MAX_PDF_MB", "50"))    # was "10"
+# Allow up to 50 MB uploads (Render/Cloudflare hard limit is typically 100 MB)
+MAX_PDF_MB = int(os.getenv("MAX_PDF_MB", "50"))
 MAX_PDF_BYTES = MAX_PDF_MB * 1024 * 1024
+
+# Cap pages we actually parse (prevents super-long runs)
 MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "200"))
-MAX_PDF_CHARS  = int(os.getenv("MAX_PDF_CHARS", str(1_000_000)))  # ~1MB text cap
 
-def _normalize_url(u: str | None) -> str | None:
-    if not u:
-        return None
-    u = u.strip()
-    if not u:
-        return None
-    if not u.lower().startswith(("http://", "https://")):
-        u = "https://" + u
-    if not urlparse(u).netloc:
-        raise HTTPException(status_code=400, detail="Canonical URL looks invalid.")
-    return u
-
-def _extract_text_pdfplumber(blob: bytes) -> list[str]:
-    import pdfplumber
-    text_all: list[str] = []
-    extracted = 0
-    with pdfplumber.open(_io.BytesIO(blob)) as pdf:
-        page_limit = min(len(pdf.pages), MAX_PDF_PAGES)
-        for i in range(page_limit):
-            t = (pdf.pages[i].extract_text() or "").strip()
-            if t:
-                need = MAX_PDF_CHARS - extracted
-                if need <= 0:
-                    break
-                if len(t) > need:
-                    t = t[:need] + "\n\n[Note: content truncated by MAX_PDF_CHARS.]"
-                text_all.append(t)
-                extracted += len(t)
-        if len(pdf.pages) > MAX_PDF_PAGES:
-            text_all.append(
-                f"\n\n[Note: PDF truncated at {MAX_PDF_PAGES} pages for processing.]"
-            )
-    return text_all
-
-def _extract_text_pypdf(blob: bytes) -> list[str]:
-    # Fallback extractor if pdfplumber isn’t available or fails
-    try:
-        import pypdf  # modern package name
-    except Exception:
-        import PyPDF2 as pypdf  # best-effort fallback if old name is present
-    text_all: list[str] = []
-    extracted = 0
-    reader = pypdf.PdfReader(_io.BytesIO(blob))
-    page_limit = min(len(reader.pages), MAX_PDF_PAGES)
-    for i in range(page_limit):
-        page = reader.pages[i]
-        t = (page.extract_text() or "").strip()
-        if t:
-            need = MAX_PDF_CHARS - extracted
-            if need <= 0:
-                break
-            if len(t) > need:
-                t = t[:need] + "\n\n[Note: content truncated by MAX_PDF_CHARS.]"
-            text_all.append(t)
-            extracted += len(t)
-    if len(reader.pages) > MAX_PDF_PAGES:
-        text_all.append(
-            f"\n\n[Note: PDF truncated at {MAX_PDF_PAGES} pages for processing.]"
-        )
-    return text_all
+# Even if the PDF is big, cap text we send to chunk/embeddings (MB of raw text)
+# ~1 char ≈ 1 byte (roughly), so 2 MB of text is already a LOT of tokens.
+MAX_PDF_TEXT_MB = float(os.getenv("MAX_PDF_TEXT_MB", "2.5"))
+MAX_PDF_TEXT_CHARS = int(MAX_PDF_TEXT_MB * 1024 * 1024)
 
 @app.post("/ingest/pdf")
 async def ingest_pdf(
@@ -564,52 +511,64 @@ async def ingest_pdf(
     url: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
-    # ---- Read safely with size cap
-    blob = await file.read(MAX_PDF_BYTES + 1)
-    if len(blob) > MAX_PDF_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"PDF too large: limit is {MAX_PDF_MB} MB."
-        )
-
-    # ---- Quick magic header gate
-    # Some browsers send octet-stream; don’t rely only on MIME/extension.
-    if not blob[:5].startswith(b"%PDF-"):
-        raise HTTPException(status_code=400, detail="Please upload a valid PDF file.")
-
-    # ---- Try to extract text (pdfplumber, then pypdf)
-    text_all: list[str] = []
-    # 1) pdfplumber path
+    """
+    Accept a PDF (multipart/form-data), extract text safely, trim it,
+    then reuse /ingest/text. Returns 4xx on user issues instead of 502 crashes.
+    """
     try:
-        text_all = _extract_text_pdfplumber(blob)
-    except Exception as e1:
-        print("[pdfplumber] parse failed, trying pypdf fallback:", e1)
-        # 2) pypdf fallback
+        # --- 0) Basic validation
+        fname = (file.filename or "").lower()
+        ctype = (file.content_type or "").lower()
+        if not (fname.endswith(".pdf") or "pdf" in ctype):
+            raise HTTPException(status_code=400, detail="Please upload a PDF file (.pdf).")
+
+        # --- 1) Size guard (prevent OOM)
+        blob = await file.read(MAX_PDF_BYTES + 1)  # +1 lets us detect overflow
+        if len(blob) > MAX_PDF_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"PDF too large. Limit is {MAX_PDF_MB} MB."
+            )
+
+        # --- 2) Parse text with page cap
+        import pdfplumber, io
+        pages_text: list[str] = []
         try:
-            text_all = _extract_text_pypdf(blob)
-        except Exception as e2:
-            # If both fail, return a clean 400 (user-visible)
-            raise HTTPException(status_code=400, detail=f"PDF parse failed: {e2}")
+            with pdfplumber.open(io.BytesIO(blob)) as pdf:
+                page_limit = min(len(pdf.pages), MAX_PDF_PAGES)
+                for i in range(page_limit):
+                    p = pdf.pages[i]
+                    t = (p.extract_text() or "").strip()
+                    if t:
+                        pages_text.append(t)
+                if len(pdf.pages) > MAX_PDF_PAGES:
+                    pages_text.append(
+                        f"[Note: PDF truncated at {MAX_PDF_PAGES} pages for processing.]"
+                    )
+        except Exception as e:
+            # Parsing issues (encrypted/corrupt) → 400
+            raise HTTPException(status_code=400, detail=f"PDF parse failed: {e}")
 
-    full_text = "\n\n".join(text_all).strip()
-    if not full_text:
-        # Most likely image-only/scanned PDF without OCR
-        raise HTTPException(
-            status_code=400,
-            detail="No extractable text found (PDF may be scanned images). Try an OCR’d PDF."
-        )
+        full_text = "\n\n".join(pages_text).strip()
+        if not full_text:
+            raise HTTPException(status_code=400, detail="No selectable text found in PDF.")
 
-    resolved_title = (title or file.filename or "Untitled PDF").strip()
-    norm_url = _normalize_url(url)
+        # --- 3) Text-size cap before chunking/embeddings (prevents huge bills/timeouts)
+        if len(full_text) > MAX_PDF_TEXT_CHARS:
+            full_text = full_text[:MAX_PDF_TEXT_CHARS] + \
+                f"\n\n[Note: content truncated at ~{MAX_PDF_TEXT_MB} MB of text for processing.]"
 
-    # Reuse the text ingest for chunking + embedding
-    result = ingest_text(
-        IngestTextIn(title=resolved_title, text=full_text, url=norm_url),
-        db
-    )
-    if isinstance(result, dict):
-        result["title"] = resolved_title
-    return result
+        # --- 4) Reuse /ingest/text path (this will chunk + embed)
+        safe_title = title or (file.filename or "PDF")
+        return ingest_text(IngestTextIn(title=safe_title, text=full_text, url=url), db)
+
+    except HTTPException:
+        # pass through explicit 4xx
+        raise
+    except Exception as e:
+        # Anything unexpected → 500 with a clear message (and your APP_DEBUG logs the traceback)
+        raise HTTPException(status_code=500, detail=f"/ingest/pdf failed: {e}")
+
 
 # -----------------------------------------------------------------------------
 # ASK (non-stream)
