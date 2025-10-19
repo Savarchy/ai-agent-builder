@@ -166,38 +166,32 @@
 
 <script>
   /************ CONFIG ************/
-  const API_BASE   = window.location.origin;               // your Render origin
-  const API_KEY    = "564654sdfjshdfkjhg6579687sf465";     // or "" if using SITE_TOKEN
-  const SITE_TOKEN = "";                                   // put a minted site JWT here for prod
+  const API_BASE   = window.location.origin;
+  const API_KEY    = "564654sdfjshdfkjhg6579687sf465";  // dev/testing only
+  const SITE_TOKEN = "";                                  // prod: paste site JWT
   const DEFAULT_BOT_ID = "default";
 
   const $ = s => document.querySelector(s);
 
-  // Auth headers
   function authHeaders(json = true) {
     const h = {};
     if (json) h["Content-Type"] = "application/json";
-    if (SITE_TOKEN && SITE_TOKEN.length > 10) {
-      h["Authorization"] = "Bearer " + SITE_TOKEN;
-    } else if (API_KEY) {
-      h["x-api-key"] = API_KEY;
-    }
+    if (SITE_TOKEN && SITE_TOKEN.length > 10) h["Authorization"] = "Bearer " + SITE_TOKEN;
+    else if (API_KEY) h["x-api-key"] = API_KEY;
     return h;
   }
 
-  // Basic API helpers
-  async function apiGet(path) {
-    return fetch(`${API_BASE}${path}`, { method: "GET", headers: authHeaders(false) });
-  }
-  async function apiPost(path, body) {
-    return fetch(`${API_BASE}${path}`, { method: "POST", headers: authHeaders(true), body: JSON.stringify(body) });
-  }
-  async function apiPostForm(path, formData) {
-    const h = authHeaders(false);
-    return fetch(`${API_BASE}${path}`, { method: "POST", headers: h, body: formData });
-  }
+  /************ API helpers ************/
+  const apiGet = (path) =>
+    fetch(`${API_BASE}${path}`, { method: "GET", headers: authHeaders(false) });
 
-  // Health
+  const apiPost = (path, body) =>
+    fetch(`${API_BASE}${path}`, { method: "POST", headers: authHeaders(true), body: JSON.stringify(body) });
+
+  const apiPostForm = (path, formData) =>
+    fetch(`${API_BASE}${path}`, { method: "POST", headers: authHeaders(false), body: formData });
+
+  /************ Health ************/
   async function health() {
     try {
       const r = await apiGet("/health/db");
@@ -207,16 +201,20 @@
       $("#health").textContent = "API not reachable ❌";
     }
   }
+  health();
 
-  // Tabs
+  /************ Tabs ************/
   function tab(n){
     ['t1','t2','t3'].forEach((x,i)=>{
       $('#'+x).classList.toggle('active', i===n-1);
       $('#p'+(i+1)).style.display = i===n-1 ? 'block' : 'none';
     });
   }
+  $('#t1').onclick=()=>tab(1);
+  $('#t2').onclick=()=>tab(2);
+  $('#t3').onclick=()=>tab(3);
 
-  // Progress helpers
+  /************ Progress helpers ************/
   function setProgress(id, pct, done=false) {
     const wrap = document.getElementById(id);
     if (!wrap) return;
@@ -246,6 +244,7 @@
     if (ref && ref._timer) { clearTimeout(ref._timer); ref._timer = null; }
   }
 
+  /************ Sources UI helpers ************/
   function addSourceCard({kind, title, url, chunks}) {
     const list = document.getElementById('sourcesList');
     const card = document.createElement('div');
@@ -256,17 +255,17 @@
     const meta = document.createElement('div');
     meta.className = 'source-meta';
     const safeTitle = title || '(untitled)';
-    const link = url ? `<a href="${url}" target="_blank" rel="noopener">${safeTitle}</a>` : safeTitle;
+    const link = url ? `<a href="${url}" target="_blank">${safeTitle}</a>` : safeTitle;
     meta.innerHTML = `${link} &nbsp; • &nbsp; ${chunks ?? '?'} chunk${(chunks|0)===1?'':'s'}`;
     card.appendChild(pill); card.appendChild(meta);
     list.prepend(card);
   }
 
-  // Personas
+  /************ Personas ************/
   async function loadBots() {
     try {
       const res = await apiGet("/bots");
-      const bots = await res.json(); // [{id,name}]
+      const bots = await res.json();
       const sel = document.getElementById("bot");
       sel.innerHTML = "";
       for (const b of bots) {
@@ -275,19 +274,16 @@
         opt.textContent = b.name;
         sel.appendChild(opt);
       }
-      if (bots.some(b => b.id === DEFAULT_BOT_ID)) {
-        sel.value = DEFAULT_BOT_ID;
-      } else if (bots.length) {
-        sel.value = bots[0].id;
-      }
+      sel.value = bots.some(b => b.id === DEFAULT_BOT_ID) ? DEFAULT_BOT_ID : (bots[0]?.id || DEFAULT_BOT_ID);
     } catch {
       const sel = document.getElementById("bot");
       sel.innerHTML = `<option value="${DEFAULT_BOT_ID}">${DEFAULT_BOT_ID}</option>`;
     }
   }
+  document.addEventListener("DOMContentLoaded", loadBots);
 
-  /************ Ingest actions ************/
-  async function handleIngestText() {
+  /************ Ingest: TEXT ************/
+  document.getElementById('ingText').onclick = async () => {
     const title = document.getElementById('title').value.trim();
     const canon = document.getElementById('canon').value.trim();
     const text  = document.getElementById('txt').value.trim();
@@ -307,9 +303,10 @@
     } finally {
       setTimeout(()=>resetProgress('pr1'), 900);
     }
-  }
+  };
 
-  async function handleIngestURL() {
+  /************ Ingest: URL ************/
+  document.getElementById('ingURL').onclick = async () => {
     const url = document.getElementById('url').value.trim();
     const status = document.getElementById('s2');
     resetProgress('pr2'); status.textContent='';
@@ -327,21 +324,20 @@
     } finally {
       setTimeout(()=>resetProgress('pr2'), 900);
     }
-  }
+  };
 
-  async function handleIngestPDF() {
+  /************ Ingest: PDF ************/
+  document.getElementById('ingPDF').onclick = async () => {
     const file = document.getElementById('pdf').files[0];
     const title = document.getElementById('pdfTitle').value.trim();
     const url   = document.getElementById('pdfUrl').value.trim();
     const status = document.getElementById('s3');
     resetProgress('pr3'); status.textContent='';
     if (!file) { status.textContent = 'Please choose a PDF file.'; return; }
-
     const form = new FormData();
     form.append('file', file);
     if (title) form.append('title', title);
     if (url)   form.append('url', url);
-
     pulseProgress('pr3');
     try {
       const res = await apiPostForm('/ingest/pdf', form);
@@ -355,9 +351,9 @@
     } finally {
       setTimeout(()=>resetProgress('pr3'), 900);
     }
-  }
+  };
 
-  /************ Chat helpers ************/
+  /************ Chat UI helpers ************/
   function addBubble(text, who){
     const b = document.createElement('div');
     b.className = 'bubble ' + (who==='user'?'user':'bot');
@@ -382,12 +378,12 @@
     return (sel && sel.value) ? sel.value : DEFAULT_BOT_ID;
   }
 
-  // ASK (SSE)
+  /************ ASK (SSE) ************/
   async function askNow() {
     const qEl = document.getElementById('q');
-    const q = (qEl?.value || "").trim();
+    const q = qEl.value.trim();
     if (!q) return;
-    window.askNow = askNow;
+
     addBubble(q, 'user');
     qEl.value = '';
 
@@ -417,41 +413,35 @@
         if (done) break;
 
         buf += dec.decode(value, { stream: true });
-
-        // SSE messages separated by blank line
-        const messages = buf.split('\n\n');
+        const messages = buf.split('\n\n'); // SSE blocks
         buf = messages.pop();
 
         for (const msg of messages) {
           let ev = 'message';
           let data = '';
-
           for (const line of msg.split('\n')) {
             if (line.startsWith('event:')) ev = line.slice(6).trim();
             else if (line.startsWith('data:')) data += line.slice(5);
           }
 
           if (ev === 'citations') {
-            // clickable links only
+            // Render ONLY clickable links
             try {
               const links = JSON.parse(data || '[]');
               if (Array.isArray(links) && links.length) {
                 const cite = document.createElement('div');
                 cite.className = 'cite';
                 cite.innerHTML = links
-                  .map(l => `<a href="${l.url}" target="_blank" rel="noopener">${(l.title || l.url)}</a>`)
+                  .map(l => `<a href="${l.url}" target="_blank" rel="noopener">${l.title || l.url}</a>`)
                   .join(' &middot; ');
                 bot.appendChild(cite);
               }
-            } catch { /* ignore malformed citations */ }
+            } catch { /* ignore */ }
             continue;
           }
 
-          // normal token data
           if (data) {
-            const clean = data
-              .replace(/\[\d+\]/g, '')                 // drop [1], [2], …
-              .replace(/\s*Sources?:.*$/i, '');        // drop trailing "Sources: …"
+            const clean = data.replace(/\[\d+\]/g, '').replace(/\s*Sources?:.*$/i, '');
             bot.innerHTML += clean.replace(/\n/g, '<br/>');
             const log = document.getElementById('log');
             log.scrollTop = log.scrollHeight;
@@ -464,46 +454,24 @@
     }
   }
 
-  /************ Wire everything AFTER DOM is ready ************/
-  function wireUI() {
-    // Tabs
-    $('#t1')?.addEventListener('click', () => tab(1));
-    $('#t2')?.addEventListener('click', () => tab(2));
-    $('#t3')?.addEventListener('click', () => tab(3));
-
-    // Ingest buttons
-    $('#ingText')?.addEventListener('click', handleIngestText);
-    $('#ingURL')?.addEventListener('click', handleIngestURL);
-    $('#ingPDF')?.addEventListener('click', handleIngestPDF);
-
-    // Ask button and Enter key
-    const askBtn = $('#ask');
-    const qEl    = $('#q');
+  // ✅ Attach listeners AFTER askNow is defined
+  document.addEventListener('DOMContentLoaded', () => {
+    const askBtn = document.getElementById('ask');
+    const qEl    = document.getElementById('q');
 
     if (askBtn) {
-      askBtn.addEventListener('click', (e) => { e.preventDefault(); askNow(); });
-      askBtn.disabled = false; // just in case
+      if (askBtn._wired) askBtn.removeEventListener('click', askBtn._wired);
+      askBtn._wired = (e) => { e.preventDefault(); askNow(); };
+      askBtn.addEventListener('click', askBtn._wired);
     }
+
     if (qEl) {
-      qEl.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); askNow(); }
-      });
+      if (qEl._wired) qEl.removeEventListener('keydown', qEl._wired);
+      qEl._wired = (e) => { if (e.key === 'Enter') { e.preventDefault(); askNow(); } };
+      qEl.addEventListener('keydown', qEl._wired);
     }
-  }
 
-  // Global error logs (helpful if anything breaks)
-  window.addEventListener('error', (e) => {
-    console.error('Global JS error:', e.message, e.filename, e.lineno, e.colno);
-  });
-  window.addEventListener('unhandledrejection', (e) => {
-    console.error('Unhandled promise rejection:', e.reason);
-  });
-
-  // Boot
-  document.addEventListener('DOMContentLoaded', () => {
-    health();
-    loadBots();
-    wireUI();
+    console.log('Ask wiring attached ✅');
   });
 </script>
 </body>
