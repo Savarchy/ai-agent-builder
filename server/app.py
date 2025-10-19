@@ -25,6 +25,19 @@ from .llm import stream_chat
 # Load .env early
 load_dotenv()
 
+from urllib.parse import urlparse
+
+def _normalize_url(u: str | None) -> str | None:
+    if not u:
+        return None
+    u = u.strip()
+    if not u:
+        return None
+    p = urlparse(u)
+    if not p.scheme:
+        # no scheme supplied → default to https
+        return "https://" + u
+    return u
 
 # -----------------------------------------------------------------------------
 # PgVector bootstrap that works on small DB plans
