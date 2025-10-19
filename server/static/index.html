@@ -90,28 +90,41 @@
     .composer .ask{ width:100%; }
     }
     @media (max-width: 860px) { .chatlog { max-height: calc(100vh - 320px); } }
-    /* --- Fix Ask button spacing/alignment --- */
+    /* --- Fix Ask row layout & make the Ask button flush with the card edge --- */
     .composer {
     margin-top: 10px;
     display: grid;
-    grid-template-columns: 160px minmax(0, 1fr) auto;
+    /* layout: [persona dropdown] [input grows] [ask button] */
+    grid-template-columns: 160px minmax(0, 1fr) max-content;
     gap: 10px;
     align-items: center;
-    padding-right: 0;         /* Ensure grid doesn't pad the right side */
     }
 
-    /* Remove default padding from parent chat card, so Ask aligns flush */
+    /* Make sure the persona dropdown isn't squeezed too small */
+    .composer select {
+    min-width: 120px;
+    }
+
+    /* Keep the chat card's standard padding; only pull the button outward */
     .card.chat {
-    padding-right: 0;
+    /* leave your default .card padding alone; no override here */
     }
 
-    /* Keep Ask button from sitting slightly inside the card */
-    .composer .ask {
-    margin-right: 0;          /* Ensure no right margin */
+    /* The actual Ask button (id="ask"): pull it into the card's right padding
+     so the button edge aligns with the card border. Your .card padding is 16px. */
+    #ask {
+    justify-self: end;
+    height: 100%;
+    margin-right: -16px;     /* matches .card { padding:16px } */
     border-top-right-radius: 12px;
     border-bottom-right-radius: 12px;
-    height: 100%;
     }
+
+    /* Optional: if you use a different card padding on small screens, adjust the pull */
+    @media (max-width: 860px) {
+    #ask { margin-right: -12px; } /* tweak if your mobile padding is smaller */
+    }
+
   </style>
   <style>
     @keyframes fadeIn { from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:translateY(0)} }
